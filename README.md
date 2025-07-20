@@ -1,2 +1,3 @@
 # sheetFmt
-Smart xlsx formatter
+
+XLSX bulk formatting program with scan and mapping tools

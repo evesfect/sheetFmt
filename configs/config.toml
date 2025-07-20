@@ -1,3 +1,7 @@
 [scan]
   input_directory = "data/input"
   output_directory = "data/output"
+
+[ui]
+  columns_per_row = 2
+  rows_per_page = 27
