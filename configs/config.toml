@@ -1,0 +1,3 @@
+[scan]
+  input_directory = "data/input"
+  output_directory = "data/output"
