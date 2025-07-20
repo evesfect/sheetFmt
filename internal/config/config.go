@@ -9,8 +9,9 @@ import (
 )
 
 type Config struct {
-	Scan ScanConfig `toml:"scan"`
-	UI   UIConfig   `toml:"ui"`
+	Scan   ScanConfig   `toml:"scan"`
+	UI     UIConfig     `toml:"ui"`
+	Format FormatConfig `toml:"format"`
 }
 
 type ScanConfig struct {
@@ -21,6 +22,11 @@ type ScanConfig struct {
 type UIConfig struct {
 	ColumnsPerRow int `toml:"columns_per_row"`
 	RowsPerPage   int `toml:"rows_per_page"`
+}
+
+type FormatConfig struct {
+	TargetFormatFile string `toml:"target_format_file"`
+	TargetSheet      string `toml:"target_sheet"`
 }
 
 // LoadConfig loads configuration from the specified config file path
@@ -42,6 +48,10 @@ func LoadConfig(configPath string) (*Config, error) {
 			UI: UIConfig{
 				ColumnsPerRow: 6,
 				RowsPerPage:   2,
+			},
+			Format: FormatConfig{
+				TargetFormatFile: "configs/target_format.xlsx",
+				TargetSheet:      "Sheet1",
 			},
 		}
 
@@ -67,6 +77,12 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 	if config.UI.RowsPerPage == 0 {
 		config.UI.RowsPerPage = 2
+	}
+	if config.Format.TargetFormatFile == "" {
+		config.Format.TargetFormatFile = "configs/target_format.xlsx"
+	}
+	if config.Format.TargetSheet == "" {
+		config.Format.TargetSheet = "Sheet1"
 	}
 
 	return &config, nil
