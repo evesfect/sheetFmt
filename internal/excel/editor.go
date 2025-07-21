@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sheetFmt/internal/mapping"
+	"strconv"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -197,6 +198,90 @@ func indexToColumn(index int) string {
 	return result
 }
 
+// InsertRows inserts the specified number of rows starting at the given row number
+func (e *Editor) InsertRows(sheet string, startRow, numRows int) error {
+	for i := 0; i < numRows; i++ {
+		err := e.file.InsertRows(sheet, startRow, 1)
+		if err != nil {
+			return fmt.Errorf("failed to insert row at position %d: %v", startRow, err)
+		}
+	}
+	return nil
+}
+
+// "=An+Cn+1" becomes "=A5+C5+1" for row 5
+// "=A2+C2+1" stays "=A2+C2+1" for all rows (fixed reference)
+func adjustFormulaForRow(formula string, targetRow int) string {
+	// Replace "n" with the actual row number
+	// This allows for dynamic row references using "n" as placeholder
+	result := strings.ReplaceAll(formula, "n", fmt.Sprintf("%d", targetRow))
+	return result
+}
+
+// parseNumericValue attempts to parse a string as a number and returns the appropriate type
+// Returns the original string if it's not a valid number, and a flag indicating if it's a float
+func parseNumericValue(value string) (interface{}, bool) {
+	// Trim whitespace
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return value, false
+	}
+
+	// Try to parse as integer first
+	if intVal, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+		return intVal, false
+	}
+
+	// Try to parse as float
+	if floatVal, err := strconv.ParseFloat(trimmed, 64); err == nil {
+		return floatVal, true
+	}
+
+	// Not a number, return as string
+	return value, false
+}
+
+// SetCellValueSmart sets a cell value, automatically detecting if it's a number
+// For float values, applies formatting to show 2 decimal places
+func (e *Editor) SetCellValueSmart(sheet, cell string, value string) error {
+	numericValue, isFloat := parseNumericValue(value)
+
+	// Set the cell value
+	err := e.file.SetCellValue(sheet, cell, numericValue)
+	if err != nil {
+		return err
+	}
+
+	// If it's a float, apply 2 decimal places formatting
+	if isFloat {
+		err = e.applyFloatFormatting(sheet, cell)
+		if err != nil {
+			return fmt.Errorf("failed to apply float formatting to cell %s: %v", cell, err)
+		}
+	}
+
+	return nil
+}
+
+// applyFloatFormatting applies number formatting with 2 decimal places to a cell
+func (e *Editor) applyFloatFormatting(sheet, cell string) error {
+	// Create a style with 2 decimal places
+	style, err := e.file.NewStyle(&excelize.Style{
+		NumFmt: 2, // Built-in format for 2 decimal places (0.00)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create float style: %v", err)
+	}
+
+	// Apply the style to the cell
+	err = e.file.SetCellStyle(sheet, cell, cell, style)
+	if err != nil {
+		return fmt.Errorf("failed to apply float style: %v", err)
+	}
+
+	return nil
+}
+
 // FormatFileWithTarget formats a single input file using target format and mappings
 func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, outputFilePath string, inputSheet, targetSheet string) error {
 	// Load mapping configuration
@@ -245,10 +330,51 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 		inputHeaderMap[header] = i
 	}
 
-	// Get all input rows for data copying
+	// Get all input rows for data copying BEFORE any modifications
 	inputRows, err := inputEditor.GetAllRows(inputSheet)
 	if err != nil {
 		return fmt.Errorf("failed to get input rows: %v", err)
+	}
+
+	// Check for column formulas in target row 2
+	hasColumnFormulas := false
+	columnFormulas := make(map[string]string) // columnLetter -> formula template
+
+	for targetColIndex, targetHeader := range targetHeaders {
+		targetColLetter := indexToColumn(targetColIndex)
+		row2Cell := fmt.Sprintf("%s2", targetColLetter)
+
+		formula, err := targetEditor.file.GetCellFormula(targetSheet, row2Cell)
+		if err != nil {
+			continue
+		}
+
+		if formula != "" {
+			columnFormulas[targetColLetter] = formula
+			hasColumnFormulas = true
+			fmt.Printf("Found column formula template in %s (%s): %s\n", row2Cell, targetHeader, formula)
+		}
+	}
+
+	// If we have column formulas and existing data, insert a row to preserve data
+	originalDataRowCount := len(inputRows)
+	if originalDataRowCount > 0 {
+		originalDataRowCount-- // Exclude header row
+	}
+
+	if hasColumnFormulas && originalDataRowCount > 0 {
+		// Insert a row after row 1 (header) to preserve existing data
+		err = inputEditor.InsertRows(inputSheet, 2, 1)
+		if err != nil {
+			return fmt.Errorf("failed to insert row for column formulas: %v", err)
+		}
+		fmt.Printf("Inserted row after header to preserve existing data\n")
+
+		// Re-read input rows after insertion
+		inputRows, err = inputEditor.GetAllRows(inputSheet)
+		if err != nil {
+			return fmt.Errorf("failed to get updated input rows: %v", err)
+		}
 	}
 
 	var errorMessages []string
@@ -263,6 +389,22 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 		err = inputEditor.SetColumnHeader(inputSheet, targetColLetter, targetHeader)
 		if err != nil {
 			return fmt.Errorf("failed to set target header for column %s: %v", targetColLetter, err)
+		}
+
+		// Check if this column has a column formula
+		if formula, hasColumnFormula := columnFormulas[targetColLetter]; hasColumnFormula {
+			// Apply column formula to all data rows
+			for rowIndex := 2; rowIndex < len(inputRows); rowIndex++ { // Start from row 2, skip header
+				cellAddress := fmt.Sprintf("%s%d", targetColLetter, rowIndex)
+				adjustedFormula := adjustFormulaForRow(formula, rowIndex)
+
+				err = inputEditor.SetCellFormula(inputSheet, cellAddress, adjustedFormula)
+				if err != nil {
+					return fmt.Errorf("failed to set column formula in cell %s: %v", cellAddress, err)
+				}
+			}
+			fmt.Printf("Applied column formula to %s: %s\n", targetColLetter, formula)
+			continue // Skip normal data copying for this column
 		}
 
 		// Check if this target column has a mapping
@@ -286,9 +428,10 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 							return fmt.Errorf("failed to set formula %s: %v", cellAddress, err)
 						}
 					} else {
-						// Target has no formula, copy the data value
+						// Target has no formula, copy the data value with smart type detection
 						if inputColIndex < len(inputRows[rowIndex]) {
-							err = inputEditor.SetCellValue(inputSheet, cellAddress, inputRows[rowIndex][inputColIndex])
+							cellValue := inputRows[rowIndex][inputColIndex]
+							err = inputEditor.SetCellValueSmart(inputSheet, cellAddress, cellValue)
 							if err != nil {
 								return fmt.Errorf("failed to set cell value %s: %v", cellAddress, err)
 							}
