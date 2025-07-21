@@ -116,6 +116,10 @@ func (e *Editor) GetCellValue(sheet, cell string) (string, error) {
 	return e.file.GetCellValue(sheet, cell)
 }
 
+func (e *Editor) GetCellDataType(sheet, cell string) (excelize.CellType, error) {
+	return e.file.GetCellType(sheet, cell)
+}
+
 // PrintCellInfo prints detailed info about a cell (for debugging)
 func (e *Editor) PrintCellInfo(sheet, cell string) {
 	value, err := e.file.GetCellValue(sheet, cell)
@@ -187,14 +191,14 @@ func columnToIndex(column string) int {
 }
 
 // Helper function to convert column index to Excel column letter
-func indexToColumn(index int) string {
+/*func indexToColumn(index int) string {
 	result := ""
 	for index >= 0 {
 		result = string(rune('A'+index%26)) + result
 		index = index/26 - 1
 	}
 	return result
-}
+}*/
 
 // InsertRows inserts the specified number of rows starting at the given row number
 func (e *Editor) InsertRows(sheet string, startRow, numRows int) error {

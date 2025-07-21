@@ -34,3 +34,4 @@ go.work.sum
 *.xlsx
 data/
 C4*
+myenv/
