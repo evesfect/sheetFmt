@@ -282,6 +282,20 @@ func (e *Editor) applyFloatFormatting(sheet, cell string) error {
 	return nil
 }
 
+// GetColumnHeadersFromRow returns column headers from a specific row number (1-based)
+func (e *Editor) GetColumnHeadersFromRow(sheet string, rowNum int) ([]string, error) {
+	rows, err := e.file.GetRows(sheet)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get rows: %v", err)
+	}
+
+	if len(rows) < rowNum || rowNum < 1 {
+		return []string{}, nil
+	}
+
+	return rows[rowNum-1], nil
+}
+
 // FormatFileWithTarget formats a single input file using target format and mappings
 func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, outputFilePath string, inputSheet, targetSheet string) error {
 	// Load mapping configuration
@@ -298,28 +312,41 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 		}
 	}
 
-	// Open target format file
+	// Open target format file (this will be our base)
 	targetEditor, err := OpenFile(targetFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to open target format file: %v", err)
 	}
 	defer targetEditor.Close()
 
-	// Open input file
-	inputEditor, err := OpenOrCreateFile(inputFilePath)
+	// Open input file (only to read data from)
+	inputEditor, err := OpenFile(inputFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to open input file %s: %v", inputFilePath, err)
 	}
 	defer inputEditor.Close()
 
+	// Find header row positions
+	targetHeaderRow, err := findHeaderRow(targetEditor, targetSheet)
+	if err != nil {
+		return fmt.Errorf("failed to find target header row: %v", err)
+	}
+	fmt.Printf("Target header row detected at: %d\n", targetHeaderRow)
+
+	inputHeaderRow, err := findHeaderRow(inputEditor, inputSheet)
+	if err != nil {
+		return fmt.Errorf("failed to find input header row: %v", err)
+	}
+	fmt.Printf("Input header row detected at: %d\n", inputHeaderRow)
+
 	// Get target format headers
-	targetHeaders, err := targetEditor.GetColumnHeaders(targetSheet)
+	targetHeaders, err := targetEditor.GetColumnHeadersFromRow(targetSheet, targetHeaderRow)
 	if err != nil {
 		return fmt.Errorf("failed to get target headers: %v", err)
 	}
 
 	// Get input file headers
-	inputHeaders, err := inputEditor.GetColumnHeaders(inputSheet)
+	inputHeaders, err := inputEditor.GetColumnHeadersFromRow(inputSheet, inputHeaderRow)
 	if err != nil {
 		return fmt.Errorf("failed to get input headers: %v", err)
 	}
@@ -330,52 +357,46 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 		inputHeaderMap[header] = i
 	}
 
-	// Get all input rows for data copying BEFORE any modifications
+	// Get all input rows and extract ONLY the data rows (excluding header)
 	inputRows, err := inputEditor.GetAllRows(inputSheet)
 	if err != nil {
 		return fmt.Errorf("failed to get input rows: %v", err)
 	}
 
-	// Check for column formulas in target row 2
-	hasColumnFormulas := false
-	columnFormulas := make(map[string]string) // columnLetter -> formula template
+	// Extract only data rows (skip header row)
+	var inputDataRows [][]string
+	for i := inputHeaderRow + 1; i < len(inputRows); i++ { // Start AFTER header row
+		inputDataRows = append(inputDataRows, inputRows[i])
+	}
+
+	// Create a NEW file based on the target format
+	resultEditor, err := OpenFile(targetFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to create result file: %v", err)
+	}
+	defer resultEditor.Close()
+
+	// Check for column formulas in target format
+	columnFormulas := make(map[string]string)
+	targetFormulaRow := targetHeaderRow + 1
 
 	for targetColIndex, targetHeader := range targetHeaders {
 		targetColLetter := indexToColumn(targetColIndex)
-		row2Cell := fmt.Sprintf("%s2", targetColLetter)
+		formulaCell := fmt.Sprintf("%s%d", targetColLetter, targetFormulaRow)
 
-		formula, err := targetEditor.file.GetCellFormula(targetSheet, row2Cell)
+		formula, err := resultEditor.file.GetCellFormula(targetSheet, formulaCell)
 		if err != nil {
 			continue
 		}
 
 		if formula != "" {
 			columnFormulas[targetColLetter] = formula
-			hasColumnFormulas = true
-			fmt.Printf("Found column formula template in %s (%s): %s\n", row2Cell, targetHeader, formula)
+			fmt.Printf("Found column formula template in %s (%s): %s\n", formulaCell, targetHeader, formula)
 		}
 	}
 
-	// If we have column formulas and existing data, insert a row to preserve data
-	originalDataRowCount := len(inputRows)
-	if originalDataRowCount > 0 {
-		originalDataRowCount-- // Exclude header row
-	}
-
-	if hasColumnFormulas && originalDataRowCount > 0 {
-		// Insert a row after row 1 (header) to preserve existing data
-		err = inputEditor.InsertRows(inputSheet, 2, 1)
-		if err != nil {
-			return fmt.Errorf("failed to insert row for column formulas: %v", err)
-		}
-		fmt.Printf("Inserted row after header to preserve existing data\n")
-
-		// Re-read input rows after insertion
-		inputRows, err = inputEditor.GetAllRows(inputSheet)
-		if err != nil {
-			return fmt.Errorf("failed to get updated input rows: %v", err)
-		}
-	}
+	// Data ALWAYS starts at targetHeaderRow + 2 (standard positioning)
+	resultDataStartRow := targetHeaderRow + 2
 
 	var errorMessages []string
 	hasErrors := false
@@ -385,96 +406,60 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 	for targetColIndex, targetHeader := range targetHeaders {
 		targetColLetter := indexToColumn(targetColIndex)
 
-		// Set the target header
-		err = inputEditor.SetColumnHeader(inputSheet, targetColLetter, targetHeader)
-		if err != nil {
-			return fmt.Errorf("failed to set target header for column %s: %v", targetColLetter, err)
-		}
-
-		// Check if this column has a column formula
+		// Handle column formulas
 		if formula, hasColumnFormula := columnFormulas[targetColLetter]; hasColumnFormula {
 			// Apply column formula to all data rows
-			for rowIndex := 2; rowIndex < len(inputRows); rowIndex++ { // Start from row 2, skip header
-				cellAddress := fmt.Sprintf("%s%d", targetColLetter, rowIndex)
-				adjustedFormula := adjustFormulaForRow(formula, rowIndex)
+			for dataIndex := 0; dataIndex < len(inputDataRows); dataIndex++ {
+				resultRowIndex := resultDataStartRow + dataIndex
+				cellAddress := fmt.Sprintf("%s%d", targetColLetter, resultRowIndex)
+				adjustedFormula := adjustFormulaForRow(formula, resultRowIndex)
 
-				err = inputEditor.SetCellFormula(inputSheet, cellAddress, adjustedFormula)
+				err = resultEditor.SetCellFormula(targetSheet, cellAddress, adjustedFormula)
 				if err != nil {
 					return fmt.Errorf("failed to set column formula in cell %s: %v", cellAddress, err)
 				}
 			}
 			fmt.Printf("Applied column formula to %s: %s\n", targetColLetter, formula)
-			continue // Skip normal data copying for this column
+			continue // Skip data copying for formula columns
 		}
 
-		// Check if this target column has a mapping
+		// Handle mapped columns (copy data with format preservation)
 		if scannedColumn, hasMapping := targetToScanned[targetHeader]; hasMapping {
-			// Check if the scanned column exists in input file
 			if inputColIndex, exists := inputHeaderMap[scannedColumn]; exists {
-				// Copy data from input column to target column
-				for rowIndex := 1; rowIndex < len(inputRows); rowIndex++ { // Skip header row
-					cellAddress := fmt.Sprintf("%s%d", targetColLetter, rowIndex+1)
+				// Copy data to the result starting from the correct row
+				for dataIndex, inputRow := range inputDataRows {
+					resultRowIndex := resultDataStartRow + dataIndex
+					resultCellAddress := fmt.Sprintf("%s%d", targetColLetter, resultRowIndex)
 
-					// Check if the target format has a formula in this cell
-					targetFormula, err := targetEditor.GetCellFormula(targetSheet, cellAddress)
-					if err != nil {
-						return fmt.Errorf("failed to check formula in target cell %s: %v", cellAddress, err)
-					}
+					// Calculate input cell address for format copying
+					inputRowIndex := inputHeaderRow + 1 + dataIndex + 1 // +1 for header, +1 for dataIndex, +1 for Excel 1-based
+					inputCellAddress := fmt.Sprintf("%s%d", indexToColumn(inputColIndex), inputRowIndex)
 
-					if targetFormula != "" {
-						// Target has a formula, copy the formula instead of data
-						err = inputEditor.SetCellFormula(inputSheet, cellAddress, targetFormula)
+					if inputColIndex < len(inputRow) {
+						// Copy cell value with format preservation
+						err = copyCellWithFormat(inputEditor, inputSheet, inputCellAddress,
+							resultEditor, targetSheet, resultCellAddress)
 						if err != nil {
-							return fmt.Errorf("failed to set formula %s: %v", cellAddress, err)
-						}
-					} else {
-						// Target has no formula, copy the data value with smart type detection
-						if inputColIndex < len(inputRows[rowIndex]) {
-							cellValue := inputRows[rowIndex][inputColIndex]
-							err = inputEditor.SetCellValueSmart(inputSheet, cellAddress, cellValue)
-							if err != nil {
-								return fmt.Errorf("failed to set cell value %s: %v", cellAddress, err)
-							}
+							return fmt.Errorf("failed to copy cell %s to %s: %v", inputCellAddress, resultCellAddress, err)
 						}
 					}
 				}
 			} else {
-				// Mapping exists but column not found in input
 				errorMessages = append(errorMessages, fmt.Sprintf("%s:%s:: mapped column '%s' not found in input", inputFileName, inputSheet, scannedColumn))
 				hasErrors = true
 			}
 		} else {
-			// No mapping for this target column - still need to copy formulas if they exist
-			for rowIndex := 1; rowIndex < len(inputRows); rowIndex++ { // Skip header row
-				cellAddress := fmt.Sprintf("%s%d", targetColLetter, rowIndex+1)
-
-				// Check if the target format has a formula in this cell
-				targetFormula, err := targetEditor.GetCellFormula(targetSheet, cellAddress)
-				if err != nil {
-					return fmt.Errorf("failed to check formula in target cell %s: %v", cellAddress, err)
-				}
-
-				if targetFormula != "" {
-					// Copy formula from target format even if no mapping
-					err = inputEditor.SetCellFormula(inputSheet, cellAddress, targetFormula)
-					if err != nil {
-						return fmt.Errorf("failed to set formula %s: %v", cellAddress, err)
-					}
-				}
-			}
-
 			errorMessages = append(errorMessages, fmt.Sprintf("%s:%s:: no mapping for '%s'", inputFileName, inputSheet, targetHeader))
 			hasErrors = true
 		}
 	}
 
-	// If there are any errors, print them and handle problematic file
+	// Handle errors
 	if hasErrors {
 		for _, msg := range errorMessages {
 			fmt.Println(msg)
 		}
 
-		// Copy file to problematic directory
 		problematicDir := "data/problematic"
 		err2 := os.MkdirAll(problematicDir, 0755)
 		if err2 != nil {
@@ -486,14 +471,38 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 				fmt.Printf("Failed to copy problematic file: %v\n", err2)
 			}
 		}
-
 		return fmt.Errorf("formatting failed")
 	}
 
-	// Save the formatted file
-	err = inputEditor.SaveAs(outputFilePath)
+	// Save the result file
+	err = resultEditor.SaveAs(outputFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to save formatted file %s: %v", outputFilePath, err)
+	}
+
+	return nil
+}
+
+// copyCellWithFormat copies a cell value and its format from source to destination
+func copyCellWithFormat(sourceEditor *Editor, sourceSheet, sourceCell string,
+	destEditor *Editor, destSheet, destCell string) error {
+
+	// Get the cell value (preserves original data type)
+	cellValue, err := sourceEditor.file.GetCellValue(sourceSheet, sourceCell)
+	if err != nil {
+		return fmt.Errorf("failed to get source cell value: %v", err)
+	}
+
+	// Set the value in destination
+	err = destEditor.file.SetCellValue(destSheet, destCell, cellValue)
+	if err != nil {
+		return fmt.Errorf("failed to set cell value: %v", err)
+	}
+
+	// Copy the cell style/format
+	style, err := sourceEditor.file.GetCellStyle(sourceSheet, sourceCell)
+	if err == nil {
+		destEditor.file.SetCellStyle(destSheet, destCell, destCell, style)
 	}
 
 	return nil

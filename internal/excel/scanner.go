@@ -9,6 +9,49 @@ import (
 	"strings"
 )
 
+// findHeaderRow finds the row position of column headers by looking for the first row
+// that has data in the rightmost column position
+func findHeaderRow(editor *Editor, sheetName string) (int, error) {
+	// Get all rows
+	rows, err := editor.GetAllRows(sheetName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rows: %v", err)
+	}
+
+	if len(rows) == 0 {
+		return 1, nil // Default to row 1 if no data
+	}
+
+	// Find the rightmost column position that has data across all rows
+	rightmostCol := 0
+	for _, row := range rows {
+		// Check from the end of the row to find the last non-empty cell
+		for i := len(row) - 1; i >= 0; i-- {
+			if strings.TrimSpace(row[i]) != "" {
+				if i+1 > rightmostCol {
+					rightmostCol = i + 1
+				}
+				break
+			}
+		}
+	}
+
+	if rightmostCol == 0 {
+		return 1, nil // No data found, default to row 1
+	}
+
+	// Find the first row that has data in the rightmost column position
+	for rowIdx, row := range rows {
+		if len(row) >= rightmostCol {
+			if strings.TrimSpace(row[rightmostCol-1]) != "" {
+				return rowIdx + 1, nil // Return 1-based row number
+			}
+		}
+	}
+
+	return 1, nil // Fallback to row 1 if no pattern found
+}
+
 // ScanAllColumnsInDirectory scans all .xlsx files in the specified directory
 // and extracts all unique column names from all sheets, saving them to scanned_columns file
 func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
@@ -107,10 +150,19 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool) error {
 	for _, sheetName := range sheetNames {
 		fmt.Printf("  - Scanning sheet: %s\n", sheetName)
 
-		// Get column headers from this sheet
-		headers, err := editor.GetColumnHeaders(sheetName)
+		// Find the header row position for this sheet
+		headerRow, err := findHeaderRow(editor, sheetName)
 		if err != nil {
-			fmt.Printf("    Warning: Failed to read headers from sheet %s: %v\n", sheetName, err)
+			fmt.Printf("    Warning: Failed to find header row in sheet %s: %v\n", sheetName, err)
+			continue
+		}
+
+		fmt.Printf("    Header row detected at: %d\n", headerRow)
+
+		// Get column headers from the detected header row
+		headers, err := editor.GetColumnHeadersFromRow(sheetName, headerRow)
+		if err != nil {
+			fmt.Printf("    Warning: Failed to read headers from row %d in sheet %s: %v\n", headerRow, sheetName, err)
 			continue
 		}
 
