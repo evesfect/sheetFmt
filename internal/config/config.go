@@ -25,9 +25,10 @@ type UIConfig struct {
 }
 
 type FormatConfig struct {
-	TargetFormatFile string `toml:"target_format_file"`
-	TargetSheet      string `toml:"target_sheet"`
-	FormulaRow       int    `toml:"formula_row"`
+	TargetFormatFile  string `toml:"target_format_file"`
+	TargetSheet       string `toml:"target_sheet"`
+	FormulaRow        int    `toml:"formula_row"`
+	TableEndTolerance int    `toml:"table_end_tolerance"`
 }
 
 // LoadConfig loads configuration from the specified config file path
@@ -51,9 +52,10 @@ func LoadConfig(configPath string) (*Config, error) {
 				RowsPerPage:   2,
 			},
 			Format: FormatConfig{
-				TargetFormatFile: "configs/target_format.xlsx",
-				TargetSheet:      "Sheet1",
-				FormulaRow:       100,
+				TargetFormatFile:  "configs/target_format.xlsx",
+				TargetSheet:       "Sheet1",
+				FormulaRow:        100,
+				TableEndTolerance: 1,
 			},
 		}
 
@@ -88,6 +90,9 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 	if config.Format.FormulaRow == 0 {
 		config.Format.FormulaRow = 100
+	}
+	if config.Format.TableEndTolerance == 0 {
+		config.Format.TableEndTolerance = 1
 	}
 
 	return &config, nil

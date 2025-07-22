@@ -100,6 +100,7 @@ func runFormat(cfg *config.Config, inputFilePath string) {
 		mappingFilePath,
 		cfg.Format.TargetSheet,
 		cfg.Format.FormulaRow,
+		cfg.Format.TableEndTolerance,
 	)
 	if err != nil {
 		log.Fatal("Error formatting file:", err)

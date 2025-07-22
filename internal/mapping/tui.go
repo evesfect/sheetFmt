@@ -395,7 +395,7 @@ func (m model) viewSelectScanned() string {
 	var b strings.Builder
 
 	// Title
-	title := m.titleStyle.Width(m.width).Render("📊 Column Mapping Tool")
+	title := m.titleStyle.Width(m.width).Render("Column Mapping Tool")
 	b.WriteString(title)
 	b.WriteString("\n\n")
 
