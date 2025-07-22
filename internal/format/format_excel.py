@@ -136,24 +136,40 @@ class ExcelFormatter:
     def get_input_headers(self) -> Dict[str, int]:
         """Get input file headers mapping"""
         headers = {}
+        
+        # Detect header row
+        input_header_row = self.detect_header_row(self.input_ws)
+        safe_print(f"DEBUG: Input header row detected: {input_header_row}")
+        
         safe_print("DEBUG: Input file headers:")
         for col_idx in range(1, self.input_ws.max_column + 1):
-            cell = self.input_ws.cell(row=1, column=col_idx)
+            cell = self.input_ws.cell(row=input_header_row, column=col_idx)
             if cell.value:
                 header_value = str(cell.value).strip()
                 headers[header_value] = col_idx
                 safe_print(f"  Column {col_idx}: '{header_value}'")
+        
+        # Store the header row for later use
+        self.input_header_row = input_header_row
         return headers
     
     def get_target_headers(self) -> List[Tuple[str, int]]:
         """Get target format headers with their column indices"""
         headers = []
+        
+        # Detect header row
+        target_header_row = self.detect_header_row(self.target_ws)
+        safe_print(f"DEBUG: Target header row detected: {target_header_row}")
+        
         safe_print("DEBUG: Target format headers:")
         for col_idx in range(1, self.target_ws.max_column + 1):
-            cell = self.target_ws.cell(row=1, column=col_idx)
+            cell = self.target_ws.cell(row=target_header_row, column=col_idx)
             header_value = str(cell.value).strip() if cell.value else ""
             headers.append((header_value, col_idx))
             safe_print(f"  Column {col_idx}: '{header_value}'")
+        
+        # Store the header row for later use
+        self.target_header_row = target_header_row
         return headers
     
     def copy_data_type_only(self, source_cell, target_cell):
@@ -187,7 +203,9 @@ class ExcelFormatter:
             target_cell.number_format = source_cell.number_format
     
     def adjust_formula_for_row(self, formula: str, target_row: int) -> str:
-        """Adjust formula template for specific row (replace 'n' or 'N' with row number)"""
+        """Adjust formula template by appending row number to column letters"""
+        import re
+        
         # Convert to string if it's not already
         if not isinstance(formula, str):
             formula = str(formula)
@@ -197,9 +215,16 @@ class ExcelFormatter:
         if not formula.startswith('='):
             formula = '=' + formula
         
-        # Replace both lowercase 'n' and uppercase 'N' with row number
-        # Use case-insensitive replacement to catch both
-        adjusted = formula.replace('n', str(target_row)).replace('N', str(target_row))
+        # Find all column references (A-Z, AA-ZZ, etc.) and append row number
+        # This regex matches one or more uppercase letters that represent Excel columns
+        def replace_column(match):
+            column_letter = match.group(0)
+            return column_letter + str(target_row)
+        
+        # Pattern to match Excel column letters (A, B, AA, AB, etc.)
+        # Only matches when not already followed by a number
+        pattern = r'[A-Z]+(?!\d)'
+        adjusted = re.sub(pattern, replace_column, formula)
         
         safe_print(f"DEBUG: Adjusted formula from '{formula}' to '{adjusted}' for row {target_row}")
         return adjusted
@@ -211,16 +236,22 @@ class ExcelFormatter:
         safe_print(f"DEBUG: Processing column {col_letter} with formula template: {formula_template}")
         
         formulas_applied = 0
-        for row_idx in range(2, max_data_row + 1):  # Start from row 2 (after header)
-            target_cell = self.target_ws.cell(row=row_idx, column=col_idx)
-            adjusted_formula = self.adjust_formula_for_row(formula_template, row_idx)
+        target_data_start_row = self.target_header_row + 1
+        
+        # Calculate how many data rows we have from input
+        input_data_rows = max_data_row - self.input_header_row
+        
+        for row_offset in range(input_data_rows):
+            target_row_idx = target_data_start_row + row_offset
+            target_cell = self.target_ws.cell(row=target_row_idx, column=col_idx)
+            adjusted_formula = self.adjust_formula_for_row(formula_template, target_row_idx)
             target_cell.value = adjusted_formula
             formulas_applied += 1
         
         safe_print(f"Applied column formula to {col_letter}: {formula_template} ({formulas_applied} cells)")
     
     def process_column_with_mapping(self, target_col_idx: int, target_header: str, 
-                                   scanned_column: str, input_headers: Dict[str, int]):
+                               scanned_column: str, input_headers: Dict[str, int]):
         """Process a column that has data mapping"""
         safe_print(f"DEBUG: Processing column '{target_header}' mapped to '{scanned_column}'")
         
@@ -237,11 +268,17 @@ class ExcelFormatter:
         # Get the maximum row with data in input file
         max_input_row = self.input_ws.max_row
         
-        # Process each data row from input file
+        # Process each data row from input file (starting after header row)
         rows_processed = 0
-        for row_idx in range(2, max_input_row + 1):  # Start from row 2 (skip header)
-            input_cell = self.input_ws.cell(row=row_idx, column=input_col_idx)
-            target_cell = self.target_ws.cell(row=row_idx, column=target_col_idx)
+        input_data_start_row = self.input_header_row + 1
+        target_data_start_row = self.target_header_row + 1
+        
+        for input_row_idx in range(input_data_start_row, max_input_row + 1):
+            # Calculate corresponding target row
+            target_row_idx = target_data_start_row + (input_row_idx - input_data_start_row)
+            
+            input_cell = self.input_ws.cell(row=input_row_idx, column=input_col_idx)
+            target_cell = self.target_ws.cell(row=target_row_idx, column=target_col_idx)
             
             # Check if target cell has a formula
             if target_cell.data_type == 'f' and target_cell.value:
@@ -258,7 +295,9 @@ class ExcelFormatter:
     def clear_column_data(self, col_idx: int, max_row: int):
         """Clear data in a column (keeping formulas intact)"""
         cleared_cells = 0
-        for row_idx in range(2, max_row + 1):  # Start from row 2 (keep header)
+        target_data_start_row = self.target_header_row + 1
+        
+        for row_idx in range(target_data_start_row, max_row + 1):
             cell = self.target_ws.cell(row=row_idx, column=col_idx)
             # Only clear if it's not a formula
             if cell.data_type != 'f':
@@ -268,27 +307,105 @@ class ExcelFormatter:
         if cleared_cells > 0:
             col_letter = get_column_letter(col_idx)
             safe_print(f"DEBUG: Cleared {cleared_cells} non-formula cells in column {col_letter}")
-    
+
+    def detect_header_row(self, worksheet) -> int:
+        """Detect header row using the strategy: find rightmost column with data, 
+        then find first row with data in that column"""
+        
+        if worksheet.max_row == 0:
+            return 1  # Default to row 1 if no data
+        
+        # Find the rightmost column with data across all rows
+        rightmost_col = 0
+        for row_idx in range(1, worksheet.max_row + 1):
+            for col_idx in range(worksheet.max_column, 0, -1):
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                if cell.value is not None and str(cell.value).strip() != "":
+                    if col_idx > rightmost_col:
+                        rightmost_col = col_idx
+                    break  # Found the rightmost data in this row
+        
+        if rightmost_col == 0:
+            return 1  # Default to row 1 if no data
+        
+        # Now find the first row that has data in the rightmost column
+        for row_idx in range(1, worksheet.max_row + 1):
+            cell = worksheet.cell(row=row_idx, column=rightmost_col)
+            if cell.value is not None and str(cell.value).strip() != "":
+                return row_idx
+        
+        return 1  # Default to row 1 if not found
+
+    def adjust_formula_for_row(self, formula: str, target_row: int) -> str:
+        """Adjust formula template by appending row number to column letters"""
+        import re
+        
+        # Convert to string if it's not already
+        if not isinstance(formula, str):
+            formula = str(formula)
+        
+        # Ensure formula starts with =
+        formula = formula.strip()
+        if not formula.startswith('='):
+            formula = '=' + formula
+        
+        # Find all column references (A-Z, AA-ZZ, etc.) and append row number
+        # Pattern to match Excel column letters not already followed by a number
+        pattern = r'[A-Z]+(?!\d)'
+        adjusted = re.sub(pattern, lambda m: m.group(0) + str(target_row), formula)
+        safe_print(f"Adjusted formula for row {target_row} is {adjusted}")
+        return adjusted
+
+    def apply_column_formulas_at_end(self, max_data_rows: int):
+        """Apply all column-wide formulas to data rows at the end"""
+        if not self.column_formulas:
+            safe_print("DEBUG: No column formulas to apply")
+            return
+        
+        target_data_start_row = self.target_header_row + 1
+        
+        for col_letter, formula_template in self.column_formulas.items():
+            col_idx = column_index_from_string(col_letter)
+            
+            for row_offset in range(max_data_rows):
+                actual_target_row = target_data_start_row + row_offset
+                target_cell = self.target_ws.cell(row=actual_target_row, column=col_idx)
+                adjusted_formula = self.adjust_formula_for_row(formula_template, actual_target_row)
+                target_cell.value = adjusted_formula
+            
+            safe_print(f"Applied formulas to column {col_letter}")
+
     def format_excel(self):
         """Main formatting function"""
         try:
             self.load_files()
-            self.detect_column_formulas()
+            
+            # Initialize header row variables
+            self.input_header_row = 1
+            self.target_header_row = 1
             
             input_headers = self.get_input_headers()
             target_headers = self.get_target_headers()
+            
+            # Detect column formulas after we know the target header row
+            self.detect_column_formulas()
             
             safe_print(f"DEBUG: Found {len(input_headers)} input headers and {len(target_headers)} target headers")
             safe_print(f"DEBUG: Available mappings: {len(self.target_to_scanned)}")
             safe_print(f"DEBUG: Column formulas found: {len(self.column_formulas)}")
             
-            # Calculate maximum data row from input
+            # Calculate maximum data row from input file
             max_input_data_row = self.input_ws.max_row
             
-            # Extend target worksheet if needed
-            max_target_row = max(self.target_ws.max_row, max_input_data_row)
+            # Calculate how many data rows we need in target
+            input_data_rows = max_input_data_row - self.input_header_row
+            target_max_needed_row = self.target_header_row + input_data_rows
             
-            safe_print(f"DEBUG: Max input data row: {max_input_data_row}, Max target row: {max_target_row}")
+            # Extend target worksheet if needed
+            max_target_row = max(self.target_ws.max_row, target_max_needed_row)
+            
+            safe_print(f"DEBUG: Input header row: {self.input_header_row}, Target header row: {self.target_header_row}")
+            safe_print(f"DEBUG: Max input data row: {max_input_data_row}, Max target row needed: {target_max_needed_row}")
             
             # First, clear all non-formula data in target (prepare for fresh data import)
             for header_name, col_idx in target_headers:
@@ -297,14 +414,12 @@ class ExcelFormatter:
                 
                 col_letter = get_column_letter(col_idx)
                 
-                # Don't clear columns that have column-wide formulas
-                if col_letter not in self.column_formulas:
-                    self.clear_column_data(col_idx, max_target_row)
+                # Clear all data columns (we'll apply formulas at the end)
+                self.clear_column_data(col_idx, max_target_row)
             
-            # Process each target column
+            # Process each target column (only data mapping, no formulas yet)
             processed_columns = 0
             mapped_columns = 0
-            formula_columns = 0
             
             for header_name, col_idx in target_headers:
                 if not header_name:  # Skip empty headers
@@ -315,13 +430,9 @@ class ExcelFormatter:
                 
                 safe_print(f"DEBUG: Processing target column '{header_name}' (Column {col_letter})")
                 
-                # Check if this column has a column-wide formula
+                # Only process data mapping, skip formula columns for now
                 if col_letter in self.column_formulas:
-                    formula_columns += 1
-                    safe_print(f"DEBUG: Applying column-wide formula for {col_letter}")
-                    self.process_column_with_formula(
-                        col_idx, self.column_formulas[col_letter], max_input_data_row
-                    )
+                    safe_print(f"DEBUG: Skipping formula column {col_letter} - will apply formulas at end")
                 elif header_name in self.target_to_scanned:
                     # Column has mapping
                     mapped_columns += 1
@@ -339,7 +450,13 @@ class ExcelFormatter:
                         f"no mapping for '{header_name}'"
                     )
             
-            safe_print(f"DEBUG: Summary - Processed: {processed_columns}, Mapped: {mapped_columns}, Formula: {formula_columns}, Errors: {len(self.error_messages)}")
+            safe_print(f"DEBUG: Data mapping complete - Processed: {processed_columns}, Mapped: {mapped_columns}")
+            
+            # Now apply all column formulas at the end
+            safe_print("DEBUG: Applying column-wide formulas...")
+            self.apply_column_formulas_at_end(input_data_rows)
+            
+            safe_print(f"DEBUG: Summary - Processed: {processed_columns}, Mapped: {mapped_columns}, Formula columns: {len(self.column_formulas)}, Errors: {len(self.error_messages)}")
             
             # Handle errors
             if self.error_messages:
@@ -372,7 +489,6 @@ class ExcelFormatter:
                 self.input_wb.close()
             if self.target_wb:
                 self.target_wb.close()
-
 
 def format_single_file(input_file: str, target_file: str, mapping_file: str, 
                       output_file: str, input_sheet: str, target_sheet: str, formula_row: int = 100):
