@@ -107,6 +107,14 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool) error {
 	for _, sheetName := range sheetNames {
 		fmt.Printf("  - Scanning sheet: %s\n", sheetName)
 
+		// Detect header row first
+		headerRow, err := editor.DetectHeaderRow(sheetName)
+		if err != nil {
+			fmt.Printf("    Warning: Failed to detect header row in sheet %s: %v\n", sheetName, err)
+			continue
+		}
+		fmt.Printf("    Detected header row: %d\n", headerRow)
+
 		// Get column headers from this sheet
 		headers, err := editor.GetColumnHeaders(sheetName)
 		if err != nil {
