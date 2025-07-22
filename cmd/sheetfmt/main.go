@@ -35,6 +35,8 @@ func main() {
 			return
 		}
 		runFormat(cfg, os.Args[2])
+	case "append-target-headers":
+		runAppendTargetHeaders(cfg)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -47,6 +49,7 @@ func printUsage() {
 	fmt.Println("  sheetfmt scan                    - Scan Excel files for column names")
 	fmt.Println("  sheetfmt map                     - Open interactive mapping tool")
 	fmt.Println("  sheetfmt format <input_file>     - Format single Excel file")
+	fmt.Println("  sheetfmt append-target-headers   - Add target format headers to target_columns file")
 }
 
 func runScan(cfg *config.Config) {
@@ -105,5 +108,19 @@ func runFormat(cfg *config.Config, inputFilePath string) {
 	)
 	if err != nil {
 		log.Fatal("Error formatting file:", err)
+	}
+}
+
+func runAppendTargetHeaders(cfg *config.Config) {
+	targetColumnsFile := filepath.Join(cfg.Scan.OutputDirectory, "target_columns")
+
+	fmt.Println("\nAppending target format headers to target_columns file...")
+	err := mapping.AppendTargetFormatHeadersToFile(
+		cfg.Format.TargetFormatFile,
+		cfg.Format.TargetSheet,
+		targetColumnsFile,
+	)
+	if err != nil {
+		log.Fatal("Error appending target headers:", err)
 	}
 }

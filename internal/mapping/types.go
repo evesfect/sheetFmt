@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sheetFmt/internal/excel"
 	"strings"
 )
 
@@ -98,6 +99,85 @@ func CreateDefaultTargetColumnsFile(filepath string) error {
 	defer writer.Flush()
 
 	for _, column := range defaultColumns {
+		_, err := writer.WriteString(column + "\n")
+		if err != nil {
+			return fmt.Errorf("failed to write column: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// AppendTargetFormatHeadersToFile reads headers from target format file and appends unique ones to target_columns file
+func AppendTargetFormatHeadersToFile(targetFormatFile, targetSheet, targetColumnsFile string) error {
+	// Open the target format file
+	editor, err := excel.OpenFile(targetFormatFile)
+	if err != nil {
+		return fmt.Errorf("failed to open target format file: %v", err)
+	}
+	defer editor.Close()
+
+	// Get headers from the target format file
+	headers, err := editor.GetColumnHeaders(targetSheet)
+	if err != nil {
+		return fmt.Errorf("failed to get headers from target format file: %v", err)
+	}
+
+	// Read existing target columns (if file exists)
+	var existingColumns []string
+	if _, err := os.Stat(targetColumnsFile); err == nil {
+		existingColumns, err = ReadColumnsFromFile(targetColumnsFile)
+		if err != nil {
+			return fmt.Errorf("failed to read existing target columns: %v", err)
+		}
+	}
+
+	// Create a map for quick lookup of existing columns
+	existingMap := make(map[string]bool)
+	for _, col := range existingColumns {
+		existingMap[strings.TrimSpace(col)] = true
+	}
+
+	// Add unique headers from target format
+	var newColumns []string
+	addedCount := 0
+
+	for _, header := range headers {
+		trimmedHeader := strings.TrimSpace(header)
+		if trimmedHeader != "" && !existingMap[trimmedHeader] {
+			newColumns = append(newColumns, trimmedHeader)
+			existingMap[trimmedHeader] = true
+			addedCount++
+		}
+	}
+
+	// Combine existing and new columns
+	allColumns := append(existingColumns, newColumns...)
+
+	// Write back to target_columns file
+	err = writeColumnsToFile(targetColumnsFile, allColumns)
+	if err != nil {
+		return fmt.Errorf("failed to write updated target columns: %v", err)
+	}
+
+	fmt.Printf("✓ Added %d unique headers from target format to target_columns file\n", addedCount)
+	fmt.Printf("✓ Total columns in target_columns: %d\n", len(allColumns))
+
+	return nil
+}
+
+// writeColumnsToFile writes column names to a plain text file (helper function)
+func writeColumnsToFile(filename string, columns []string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %v", err)
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
+
+	for _, column := range columns {
 		_, err := writer.WriteString(column + "\n")
 		if err != nil {
 			return fmt.Errorf("failed to write column: %v", err)
