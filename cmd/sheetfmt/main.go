@@ -37,6 +37,13 @@ func main() {
 		runFormat(cfg, os.Args[2])
 	case "append-target-headers":
 		runAppendTargetHeaders(cfg)
+	case "convert-candidate":
+		if len(os.Args) < 3 {
+			fmt.Println("Error: convert-candidate command requires candidate file path")
+			fmt.Println("Usage: sheetfmt convert-candidate <candidate_file_path>")
+			return
+		}
+		runConvertCandidate(cfg, os.Args[2])
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -46,10 +53,23 @@ func main() {
 func printUsage() {
 	fmt.Println("SheetFmt - Excel Formatting Tool")
 	fmt.Println("\nUsage:")
-	fmt.Println("  sheetfmt scan                    - Scan Excel files for column names")
-	fmt.Println("  sheetfmt map                     - Open interactive mapping tool")
-	fmt.Println("  sheetfmt format <input_file>     - Format single Excel file")
-	fmt.Println("  sheetfmt append-target-headers   - Add target format headers to target_columns file")
+	fmt.Println("  sheetfmt scan                         - Scan Excel files for column names")
+	fmt.Println("  sheetfmt map                          - Open interactive mapping tool")
+	fmt.Println("  sheetfmt format <input_file>          - Format single Excel file")
+	fmt.Println("  sheetfmt append-target-headers        - Add target format headers to target_columns file")
+	fmt.Println("  sheetfmt convert-candidate <file>     - Convert candidate format to target format")
+}
+
+func runConvertCandidate(cfg *config.Config, candidateFilePath string) {
+	fmt.Println("\nConverting candidate format to target format...")
+	err := excel.ConvertCandidateToTargetFormat(
+		candidateFilePath,
+		cfg.Format.TargetFormatFile,
+		cfg.Format.FormulaRow,
+	)
+	if err != nil {
+		log.Fatal("Error converting candidate format:", err)
+	}
 }
 
 func runScan(cfg *config.Config) {

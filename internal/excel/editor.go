@@ -3,6 +3,7 @@ package excel
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -319,4 +320,152 @@ func (e *Editor) applyFloatFormatting(sheet, cell string) error {
 	}
 
 	return nil
+}
+
+// ConvertCandidateToTargetFormat converts a candidate target format file to proper target format
+// by converting example formulas to column-wide templates and clearing example data
+func ConvertCandidateToTargetFormat(candidateFile, outputFile string, formulaRow int) error {
+	// Open the candidate file
+	editor, err := OpenFile(candidateFile)
+	if err != nil {
+		return fmt.Errorf("failed to open candidate file: %v", err)
+	}
+	defer editor.Close()
+
+	// Get all sheet names and process the first sheet (or we could make this configurable)
+	sheetNames := editor.GetSheetNames()
+	if len(sheetNames) == 0 {
+		return fmt.Errorf("no sheets found in candidate file")
+	}
+
+	sheetName := sheetNames[0] // Process first sheet
+	fmt.Printf("Processing sheet: %s\n", sheetName)
+
+	// Detect header row
+	headerRow, err := editor.DetectHeaderRow(sheetName)
+	if err != nil {
+		return fmt.Errorf("failed to detect header row: %v", err)
+	}
+	fmt.Printf("Detected header row: %d\n", headerRow)
+
+	// The example row is the first row after headers
+	exampleRow := headerRow + 1
+	fmt.Printf("Example row: %d\n", exampleRow)
+
+	// Get worksheet to find max column
+	rows, err := editor.file.GetRows(sheetName)
+	if err != nil {
+		return fmt.Errorf("failed to get rows: %v", err)
+	}
+
+	if len(rows) < exampleRow {
+		return fmt.Errorf("example row %d does not exist", exampleRow)
+	}
+
+	// Use the header row to determine max columns
+	maxColumn := len(rows[headerRow-1]) // Convert to 0-based index for rows slice
+	fmt.Printf("Max columns: %d\n", maxColumn)
+
+	formulasFound := 0
+	cellsCleared := 0
+
+	// Process each column in the example row
+	for colIdx := 0; colIdx < maxColumn; colIdx++ {
+		colLetter := indexToColumn(colIdx)
+		cellRef := fmt.Sprintf("%s%d", colLetter, exampleRow)
+
+		fmt.Printf("DEBUG: Checking cell %s\n", cellRef)
+
+		// Check cell value first
+		cellValue, err := editor.GetCellValue(sheetName, cellRef)
+		if err != nil {
+			fmt.Printf("DEBUG: Error reading cell value %s: %v\n", cellRef, err)
+			continue
+		}
+		fmt.Printf("DEBUG: Cell %s value: '%s'\n", cellRef, cellValue)
+
+		// Check if this cell has a formula
+		formula, err := editor.GetCellFormula(sheetName, cellRef)
+		if err != nil {
+			fmt.Printf("DEBUG: Error reading formula %s: %v\n", cellRef, err)
+			continue
+		}
+
+		fmt.Printf("DEBUG: Cell %s formula: '%s'\n", cellRef, formula)
+
+		// If cell has a formula OR starts with =, process it
+		hasFormula := false
+		var templateFormula string
+
+		if formula != "" {
+			fmt.Printf("Found formula in %s: %s\n", cellRef, formula)
+			templateFormula = convertFormulaToTemplate(formula)
+			hasFormula = true
+		} else if strings.HasPrefix(strings.TrimSpace(cellValue), "=") {
+			fmt.Printf("Found text formula in %s: %s\n", cellRef, cellValue)
+			templateFormula = convertFormulaToTemplate(strings.TrimSpace(cellValue))
+			hasFormula = true
+		}
+
+		if hasFormula {
+			fmt.Printf("Converted to template: %s\n", templateFormula)
+
+			// Place template formula at the configured formula row
+			templateCellRef := fmt.Sprintf("%s%d", colLetter, formulaRow)
+
+			// Set as text (since we want it to be read as a template later)
+			err = editor.SetCellValue(sheetName, templateCellRef, templateFormula)
+			if err != nil {
+				fmt.Printf("Warning: Failed to set template formula at %s: %v\n", templateCellRef, err)
+			} else {
+				fmt.Printf("✓ Set template formula at %s: %s\n", templateCellRef, templateFormula)
+				formulasFound++
+			}
+		}
+
+		// Clear the cell in example row if it has any content
+		if cellValue != "" || formula != "" {
+			err = editor.SetCellValue(sheetName, cellRef, "")
+			if err != nil {
+				fmt.Printf("Warning: Failed to clear cell %s: %v\n", cellRef, err)
+			} else {
+				fmt.Printf("✓ Cleared cell %s\n", cellRef)
+				cellsCleared++
+			}
+		}
+	}
+
+	fmt.Printf("Summary: Found %d formulas, cleared %d cells\n", formulasFound, cellsCleared)
+
+	// Save as the target format file
+	err = editor.SaveAs(outputFile)
+	if err != nil {
+		return fmt.Errorf("failed to save target format file: %v", err)
+	}
+
+	fmt.Printf("✓ Successfully converted candidate to target format: %s\n", outputFile)
+	return nil
+}
+
+// convertFormulaToTemplate converts a cell-specific formula to a column-wide template
+// Example: "=+I4*((100-J4)/100)" becomes "=+I*((100-J)/100)"
+func convertFormulaToTemplate(formula string) string {
+	// Use regex to find cell references (like I4, J4, AB4) and remove row numbers
+	// Pattern matches: one or more uppercase letters followed by one or more digits
+	re := regexp.MustCompile(`([A-Z]+)\d+`)
+
+	// Replace with just the column letters
+	template := re.ReplaceAllString(formula, "$1")
+
+	return template
+}
+
+// Helper function to convert column index to Excel column letter
+func indexToColumn(index int) string {
+	result := ""
+	for index >= 0 {
+		result = string(rune('A'+index%26)) + result
+		index = index/26 - 1
+	}
+	return result
 }

@@ -540,6 +540,7 @@ func (m model) viewConfirm() string {
 }
 
 // RunMappingTUI starts the interactive mapping interface
+// RunMappingTUI starts the interactive mapping interface
 func RunMappingTUI(scannedColumnsFile, targetColumnsFile, outputMappingFile string, uiConfig UIConfig) error {
 	scannedColumns, err := ReadColumnsFromFile(scannedColumnsFile)
 	if err != nil {
@@ -580,12 +581,40 @@ func RunMappingTUI(scannedColumnsFile, targetColumnsFile, outputMappingFile stri
 
 		fmt.Printf("✓ Loaded %d existing mappings (%d mapped, %d ignored)\n",
 			len(existingConfig.Mappings), len(m.mappings), len(m.ignored))
-
-		// Move to first unmapped column
-		m.moveToNextUnmapped()
 	} else {
 		fmt.Printf("📝 No existing mappings found, starting fresh\n")
 	}
+
+	// Auto-map exact matches between scanned and target columns
+	autoMappedCount := 0
+	targetColumnsSet := make(map[string]bool)
+	for _, target := range targetColumns {
+		targetColumnsSet[target] = true
+	}
+
+	for _, scanned := range scannedColumns {
+		// Skip if already mapped or ignored
+		if _, alreadyMapped := m.mappings[scanned]; alreadyMapped {
+			continue
+		}
+		if _, alreadyIgnored := m.ignored[scanned]; alreadyIgnored {
+			continue
+		}
+
+		// Check if there's an exact match in target columns
+		if targetColumnsSet[scanned] {
+			m.mappings[scanned] = scanned
+			m.mapped++
+			autoMappedCount++
+		}
+	}
+
+	if autoMappedCount > 0 {
+		fmt.Printf("🔗 Auto-mapped %d exact matches\n", autoMappedCount)
+	}
+
+	// Move to first unmapped column
+	m.moveToNextUnmapped()
 
 	// Run the TUI
 	p := tea.NewProgram(m, tea.WithAltScreen())

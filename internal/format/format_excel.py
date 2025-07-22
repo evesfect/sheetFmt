@@ -63,17 +63,26 @@ class ExcelFormatter:
             safe_print(f"DEBUG: Loaded mapping file: {self.mapping_file}")
             safe_print(f"DEBUG: Mapping config keys: {list(self.mapping_config.keys())}")
             
-            # Create reverse mapping
+            # Create reverse mapping and ignored set
             mappings_count = 0
+            ignored_count = 0
+            self.ignored_targets = set()  # Track ignored target columns
+            
             for mapping in self.mapping_config.get('mappings', []):
-                if not mapping.get('is_ignored', False) and mapping.get('target_column'):
+                if mapping.get('is_ignored', False):
+                    # Track ignored target columns to skip them silently
+                    self.ignored_targets.add(mapping['scanned_column'])
+                    ignored_count += 1
+                    safe_print(f"DEBUG: Ignoring '{mapping['scanned_column']}'")
+                elif mapping.get('target_column'):
                     target_col = mapping['target_column']
                     scanned_col = mapping['scanned_column']
                     self.target_to_scanned[target_col] = scanned_col
                     mappings_count += 1
-                    #safe_print(f"DEBUG: Mapping '{target_col}' -> '{scanned_col}'")
+                    safe_print(f"DEBUG: Mapping '{target_col}' -> '{scanned_col}'")
             
             safe_print(f"DEBUG: Total mappings loaded: {mappings_count}")
+            safe_print(f"DEBUG: Total ignored: {ignored_count}")
             
             # Load Excel files
             self.input_wb = load_workbook(self.input_file, data_only=False)
@@ -88,7 +97,6 @@ class ExcelFormatter:
             
         except Exception as e:
             raise Exception(f"Failed to load files: {e}")
-    
     def detect_column_formulas(self):
         """Detect column-wide formulas in target format at specified formula row"""
         self.column_formulas = {}
@@ -542,7 +550,8 @@ class ExcelFormatter:
             # Process each target column (only data mapping, no formulas yet)
             processed_columns = 0
             mapped_columns = 0
-            
+            skipped_columns = 0
+
             for header_name, col_idx in target_headers:
                 if not header_name:  # Skip empty headers
                     continue
@@ -563,16 +572,16 @@ class ExcelFormatter:
                     self.process_column_with_mapping(
                         col_idx, header_name, scanned_column, input_headers
                     )
+                elif header_name in self.ignored_targets:
+                    # Column is explicitly ignored - skip silently
+                    safe_print(f"DEBUG: Skipping ignored column '{header_name}'")
+                    skipped_columns += 1
                 else:
-                    # No mapping found
-                    safe_print(f"DEBUG: No mapping found for '{header_name}'")
-                    safe_print(f"DEBUG: Available mappings: {list(self.target_to_scanned.keys())}")
-                    self.error_messages.append(
-                        f"{os.path.basename(self.input_file)}:{self.input_sheet_name}:: "
-                        f"no mapping for '{header_name}'"
-                    )
-            
-            safe_print(f"DEBUG: Data mapping complete - Processed: {processed_columns}, Mapped: {mapped_columns}")
+                    # No mapping found - this is normal, just skip
+                    safe_print(f"DEBUG: No mapping found for '{header_name}' - leaving empty")
+                    skipped_columns += 1
+
+            safe_print(f"DEBUG: Data mapping complete - Processed: {processed_columns}, Mapped: {mapped_columns}, Skipped: {skipped_columns}")
             
             # Clean formula-only and empty rows within the data first
             self.clean_formula_only_rows_func()
