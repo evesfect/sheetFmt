@@ -27,6 +27,7 @@ type UIConfig struct {
 type FormatConfig struct {
 	TargetFormatFile string `toml:"target_format_file"`
 	TargetSheet      string `toml:"target_sheet"`
+	FormulaRow       int    `toml:"formula_row"`
 }
 
 // LoadConfig loads configuration from the specified config file path
@@ -52,6 +53,7 @@ func LoadConfig(configPath string) (*Config, error) {
 			Format: FormatConfig{
 				TargetFormatFile: "configs/target_format.xlsx",
 				TargetSheet:      "Sheet1",
+				FormulaRow:       100,
 			},
 		}
 
@@ -83,6 +85,9 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 	if config.Format.TargetSheet == "" {
 		config.Format.TargetSheet = "Sheet1"
+	}
+	if config.Format.FormulaRow == 0 {
+		config.Format.FormulaRow = 100
 	}
 
 	return &config, nil

@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 )
 
 // FormatFileWithTarget formats a single input file using Python script
-func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, outputFilePath string, inputSheet, targetSheet string) error {
+func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, outputFilePath string, inputSheet, targetSheet string, formulaRow int) error {
 	// Get the path to the Python script
 	scriptPath := "internal/format/format_excel.py"
 
@@ -17,7 +18,10 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 	}
 
 	// Run Python script
-	cmd := exec.Command("python", scriptPath, inputFilePath, targetFilePath, mappingFilePath, targetSheet, outputFilePath, inputSheet)
+	cmd := exec.Command("python", scriptPath, inputFilePath, targetFilePath, mappingFilePath, targetSheet, outputFilePath, inputSheet, strconv.Itoa(formulaRow))
+
+	// Set environment to use UTF-8 encoding for Python
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 
 	// Capture output
 	output, err := cmd.CombinedOutput()
@@ -32,7 +36,7 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 }
 
 // FormatFile formats an entire Excel file with all its sheets using Python script
-func FormatFile(inputFilePath, targetFilePath, mappingFilePath, targetSheet string) error {
+func FormatFile(inputFilePath, targetFilePath, mappingFilePath, targetSheet string, formulaRow int) error {
 	// Validate input files
 	if err := validateInputFiles(inputFilePath, targetFilePath, mappingFilePath); err != nil {
 		return err
@@ -47,7 +51,10 @@ func FormatFile(inputFilePath, targetFilePath, mappingFilePath, targetSheet stri
 	}
 
 	// Run Python script for all sheets
-	cmd := exec.Command("python", scriptPath, inputFilePath, targetFilePath, mappingFilePath, targetSheet)
+	cmd := exec.Command("python", scriptPath, inputFilePath, targetFilePath, mappingFilePath, targetSheet, strconv.Itoa(formulaRow))
+
+	// Set environment to use UTF-8 encoding for Python
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 
 	// Capture output
 	output, err := cmd.CombinedOutput()

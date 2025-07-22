@@ -9,3 +9,4 @@
 [format]
   target_format_file = "configs/target_format.xlsx"
   target_sheet = "Sheet1"
+  formula_row = 50
