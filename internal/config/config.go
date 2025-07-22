@@ -25,10 +25,11 @@ type UIConfig struct {
 }
 
 type FormatConfig struct {
-	TargetFormatFile  string `toml:"target_format_file"`
-	TargetSheet       string `toml:"target_sheet"`
-	FormulaRow        int    `toml:"formula_row"`
-	TableEndTolerance int    `toml:"table_end_tolerance"`
+	TargetFormatFile     string `toml:"target_format_file"`
+	TargetSheet          string `toml:"target_sheet"`
+	FormulaRow           int    `toml:"formula_row"`
+	TableEndTolerance    int    `toml:"table_end_tolerance"`
+	CleanFormulaOnlyRows bool   `toml:"clean_formula_only_rows"`
 }
 
 // LoadConfig loads configuration from the specified config file path
@@ -52,10 +53,11 @@ func LoadConfig(configPath string) (*Config, error) {
 				RowsPerPage:   2,
 			},
 			Format: FormatConfig{
-				TargetFormatFile:  "configs/target_format.xlsx",
-				TargetSheet:       "Sheet1",
-				FormulaRow:        100,
-				TableEndTolerance: 1,
+				TargetFormatFile:     "configs/target_format.xlsx",
+				TargetSheet:          "Sheet1",
+				FormulaRow:           100,
+				TableEndTolerance:    1,
+				CleanFormulaOnlyRows: true,
 			},
 		}
 
@@ -94,6 +96,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	if config.Format.TableEndTolerance == 0 {
 		config.Format.TableEndTolerance = 1
 	}
+	// Note: CleanFormulaOnlyRows defaults to false if not specified
 
 	return &config, nil
 }

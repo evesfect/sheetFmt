@@ -36,7 +36,7 @@ func FormatFileWithTarget(inputFilePath, targetFilePath, mappingFilePath, output
 }
 
 // FormatFile formats an entire Excel file with all its sheets using Python script
-func FormatFile(inputFilePath, targetFilePath, mappingFilePath, targetSheet string, formulaRow int, tableEndTolerance int) error {
+func FormatFile(inputFilePath, targetFilePath, mappingFilePath, targetSheet string, formulaRow int, tableEndTolerance int, cleanFormulaOnlyRows bool) error {
 	// Validate input files
 	if err := validateInputFiles(inputFilePath, targetFilePath, mappingFilePath); err != nil {
 		return err
@@ -50,8 +50,14 @@ func FormatFile(inputFilePath, targetFilePath, mappingFilePath, targetSheet stri
 		return fmt.Errorf("python formatting script not found: %s", scriptPath)
 	}
 
+	// Convert bool to string for Python
+	cleanFlag := "false"
+	if cleanFormulaOnlyRows {
+		cleanFlag = "true"
+	}
+
 	// Run Python script for all sheets
-	cmd := exec.Command("python", scriptPath, inputFilePath, targetFilePath, mappingFilePath, targetSheet, strconv.Itoa(formulaRow), strconv.Itoa(tableEndTolerance))
+	cmd := exec.Command("python", scriptPath, inputFilePath, targetFilePath, mappingFilePath, targetSheet, strconv.Itoa(formulaRow), strconv.Itoa(tableEndTolerance), cleanFlag)
 
 	// Set environment to use UTF-8 encoding for Python
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")

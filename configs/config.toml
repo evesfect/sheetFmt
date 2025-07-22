@@ -11,3 +11,4 @@
   target_sheet = "Sheet1"
   formula_row = 50
   table_end_tolerance = 2
+  clean_formula_only_rows = true

@@ -27,7 +27,8 @@ def safe_print(text):
 
 class ExcelFormatter:
     def __init__(self, input_file: str, target_file: str, mapping_file: str, 
-                 output_file: str, input_sheet: str, target_sheet: str, formula_row: int = 100, table_end_tolerance: int = 1):
+                 output_file: str, input_sheet: str, target_sheet: str, formula_row: int = 100, 
+                 table_end_tolerance: int = 1, clean_formula_only_rows: bool = True):
         self.input_file = input_file
         self.target_file = target_file
         self.mapping_file = mapping_file
@@ -36,6 +37,7 @@ class ExcelFormatter:
         self.target_sheet_name = target_sheet
         self.formula_row = formula_row
         self.table_end_tolerance = table_end_tolerance
+        self.clean_formula_only_rows = clean_formula_only_rows
         
         self.input_wb = None
         self.target_wb = None
@@ -190,6 +192,64 @@ class ExcelFormatter:
         
         safe_print(f"DEBUG: Table end row detected: {table_end_row} (tolerance: {self.table_end_tolerance})")
         return table_end_row
+
+    def clean_formula_only_rows_func(self):
+        """Remove rows that only contain formulas and completely empty rows"""
+        if not self.clean_formula_only_rows:
+            safe_print("DEBUG: Formula-only row cleaning is disabled")
+            return
+        
+        safe_print("DEBUG: Starting formula-only and empty row cleanup...")
+        
+        rows_to_delete = []
+        
+        # Check each row starting from row 1, but skip header row
+        for row_idx in range(1, self.target_ws.max_row + 1):
+            # Skip the header row
+            if row_idx == self.target_header_row:
+                continue
+                
+            has_non_formula_data = False
+            
+            # Check all cells in this row
+            for col_idx in range(1, self.target_ws.max_column + 1):
+                cell = self.target_ws.cell(row=row_idx, column=col_idx)
+                
+                if cell.value is not None:
+                    # If cell contains data that's not a formula, keep the row
+                    if cell.data_type != 'f':
+                        # Check if it's not just whitespace
+                        if str(cell.value).strip() != "":
+                            has_non_formula_data = True
+                            break
+            
+            # If row has no non-formula data (either empty or only formulas), mark for deletion
+            if not has_non_formula_data:
+                rows_to_delete.append(row_idx)
+        
+        # Delete rows in reverse order to maintain row indices
+        deleted_count = 0
+        for row_idx in reversed(rows_to_delete):
+            #safe_print(f"DEBUG: Deleting empty/formula-only row: {row_idx}")
+            self.target_ws.delete_rows(row_idx, 1)
+            deleted_count += 1
+        
+        #safe_print(f"DEBUG: Cleaned up {deleted_count} empty/formula-only rows")
+
+    def clear_rows_after(self, after_row: int):
+        """Clear all rows after the specified row number"""
+        if after_row >= self.target_ws.max_row:
+            safe_print(f"DEBUG: No rows to clear after row {after_row} (max row is {self.target_ws.max_row})")
+            return
+        
+        safe_print(f"DEBUG: Clearing all rows after row {after_row}")
+        
+        rows_to_delete = self.target_ws.max_row - after_row
+        if rows_to_delete > 0:
+            # Delete all rows from after_row+1 to max_row
+            self.target_ws.delete_rows(after_row + 1, rows_to_delete)
+            safe_print(f"DEBUG: Deleted {rows_to_delete} rows after row {after_row}")
+
 
     def get_input_headers(self) -> Dict[str, int]:
         """Get input file headers mapping"""
@@ -453,7 +513,7 @@ class ExcelFormatter:
             self.detect_column_formulas()
             
             safe_print(f"DEBUG: Found {len(input_headers)} input headers and {len(target_headers)} target headers")
-            #safe_print(f"DEBUG: Available mappings: {len(self.target_to_scanned)}")
+            safe_print(f"DEBUG: Available mappings: {len(self.target_to_scanned)}")
             safe_print(f"DEBUG: Column formulas found: {len(self.column_formulas)}")
             
             # Calculate maximum data row from input file
@@ -490,21 +550,23 @@ class ExcelFormatter:
                 col_letter = get_column_letter(col_idx)
                 processed_columns += 1
                 
-                #safe_print(f"DEBUG: Processing target column '{header_name}' (Column {col_letter})")
+                safe_print(f"DEBUG: Processing target column '{header_name}' (Column {col_letter})")
                 
-                # Only process data mapping
-                if header_name in self.target_to_scanned:
+                # Only process data mapping, skip formula columns for now
+                if col_letter in self.column_formulas:
+                    safe_print(f"DEBUG: Skipping formula column {col_letter} - will apply formulas after cleanup")
+                elif header_name in self.target_to_scanned:
                     # Column has mapping
                     mapped_columns += 1
                     scanned_column = self.target_to_scanned[header_name]
-                    #safe_print(f"DEBUG: Applying data mapping for {col_letter}: '{header_name}' -> '{scanned_column}'")
+                    safe_print(f"DEBUG: Applying data mapping for {col_letter}: '{header_name}' -> '{scanned_column}'")
                     self.process_column_with_mapping(
                         col_idx, header_name, scanned_column, input_headers
                     )
                 else:
                     # No mapping found
                     safe_print(f"DEBUG: No mapping found for '{header_name}'")
-                    #safe_print(f"DEBUG: Available mappings: {list(self.target_to_scanned.keys())}")
+                    safe_print(f"DEBUG: Available mappings: {list(self.target_to_scanned.keys())}")
                     self.error_messages.append(
                         f"{os.path.basename(self.input_file)}:{self.input_sheet_name}:: "
                         f"no mapping for '{header_name}'"
@@ -512,9 +574,26 @@ class ExcelFormatter:
             
             safe_print(f"DEBUG: Data mapping complete - Processed: {processed_columns}, Mapped: {mapped_columns}")
             
-            # Now apply all column formulas at the end
-            #safe_print("DEBUG: Applying column-wide formulas...")
-            self.apply_column_formulas_at_end(input_data_rows)
+            # Clean formula-only and empty rows within the data first
+            self.clean_formula_only_rows_func()
+            
+            # NOW detect the table end row after importing data
+            actual_data_end_row = self.detect_table_end_row(self.target_ws, self.target_header_row)
+            safe_print(f"DEBUG: Actual imported data ends at row: {actual_data_end_row}")
+            
+            # Clear everything after the actual data
+            self.clear_rows_after(actual_data_end_row)
+            
+            # Calculate how many actual data rows we have
+            actual_data_rows = actual_data_end_row - self.target_header_row
+            safe_print(f"DEBUG: Final data rows count: {actual_data_rows}")
+            
+            # Now apply column formulas to the cleaned-up rows
+            safe_print("DEBUG: Applying column-wide formulas after cleanup...")
+            self.apply_column_formulas_at_end(actual_data_rows)
+
+            self.target_ws.cell(row=actual_data_end_row + 4, column=1).value = "*Fiyatlandırma ve promosyon akitiviteleri ile ilgili nihai karar müşterinindir"
+            self.target_ws.cell(row=actual_data_end_row + 5, column=1).value = "*P&G'nin müşteri karlılığı üzerinde herhangi bir belirleyiciliği olmayıp, iligli kar marjı sütunları tavsiye kar marjlarıdır, nihai karar müşterinindir"
             
             safe_print(f"DEBUG: Summary - Processed: {processed_columns}, Mapped: {mapped_columns}, Formula columns: {len(self.column_formulas)}, Errors: {len(self.error_messages)}")
             
@@ -550,15 +629,17 @@ class ExcelFormatter:
             if self.target_wb:
                 self.target_wb.close()
 
+
 def format_single_file(input_file: str, target_file: str, mapping_file: str, 
-                      output_file: str, input_sheet: str, target_sheet: str, formula_row: int = 100, table_end_tolerance: int = 1):
-    """Format a single Excel file"""
+                      output_file: str, input_sheet: str, target_sheet: str, formula_row: int = 100, 
+                      table_end_tolerance: int = 1, clean_formula_only_rows: bool = True):
     formatter = ExcelFormatter(input_file, target_file, mapping_file, 
-                              output_file, input_sheet, target_sheet, formula_row, table_end_tolerance)
+                              output_file, input_sheet, target_sheet, formula_row, table_end_tolerance, clean_formula_only_rows)
     formatter.format_excel()
 
 
-def format_all_sheets(input_file: str, target_file: str, mapping_file: str, target_sheet: str, formula_row: int = 100, table_end_tolerance: int = 1):
+def format_all_sheets(input_file: str, target_file: str, mapping_file: str, target_sheet: str, 
+                     formula_row: int = 100, table_end_tolerance: int = 1, clean_formula_only_rows: bool = True):
     """Format all sheets in an Excel file"""
     # Validate input files
     for file_path in [input_file, target_file, mapping_file]:
@@ -587,13 +668,12 @@ def format_all_sheets(input_file: str, target_file: str, mapping_file: str, targ
         try:
             format_single_file(
                 input_file, target_file, mapping_file,
-                str(output_file), sheet_name, target_sheet, formula_row, table_end_tolerance
+                str(output_file), sheet_name, target_sheet, formula_row, table_end_tolerance, clean_formula_only_rows
             )
             safe_print(f"Format successful for {sheet_name}")
         except Exception as e:
             safe_print(f"Problematic file copied to: data/problematic/{os.path.basename(input_file)}")
             safe_print(f"Error for sheet {sheet_name}: {e}")
-
 
 def main():
     """Main entry point for command line usage"""
@@ -623,15 +703,18 @@ def main():
         except ValueError:
             safe_print(f"Invalid table_end_tolerance value: {sys.argv[6]}, using default 1")
     
-    if len(sys.argv) >= 9:
+    clean_formula_only_rows = True  # default
+    if len(sys.argv) >= 8:
+        clean_formula_only_rows = sys.argv[7].lower() == "true"
+    if len(sys.argv) >= 10:
         # Single file format
-        output_file = sys.argv[7]
-        input_sheet = sys.argv[8]
+        output_file = sys.argv[8]
+        input_sheet = sys.argv[9]
         format_single_file(input_file, target_file, mapping_file, 
-                          output_file, input_sheet, target_sheet, formula_row, table_end_tolerance)
+                          output_file, input_sheet, target_sheet, formula_row, table_end_tolerance, clean_formula_only_rows)
     else:
         # Format all sheets
-        format_all_sheets(input_file, target_file, mapping_file, target_sheet, formula_row, table_end_tolerance)
+        format_all_sheets(input_file, target_file, mapping_file, target_sheet, formula_row, table_end_tolerance, clean_formula_only_rows)
 
 
 if __name__ == "__main__":
