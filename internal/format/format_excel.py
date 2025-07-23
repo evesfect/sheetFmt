@@ -383,15 +383,11 @@ class ExcelFormatter:
     def process_column_with_mapping(self, target_col_idx: int, target_header: str, 
                                scanned_column: str, input_headers: Dict[str, int]):
         """Process a column that has data mapping"""
-        ###safe_print(f"DEBUG: Processing column '{target_header}' mapped to '{scanned_column}'")
+        safe_print(f"DEBUG: Processing column '{target_header}' mapped to '{scanned_column}'")
         
         if scanned_column not in input_headers:
-            #safe_print(f"DEBUG: Available input headers: {list(input_headers.keys())}")
-            self.error_messages.append(
-                f"{os.path.basename(self.input_file)}:{self.input_sheet_name}:: "
-                f"mapped column '{scanned_column}' not found in input"
-            )
-            return
+            safe_print(f"DEBUG: Mapped column '{scanned_column}' not found in input file - leaving target column empty")
+            return  # Just return silently, don't add error
         
         input_col_idx = input_headers[scanned_column]
         
@@ -420,8 +416,7 @@ class ExcelFormatter:
             
             rows_processed += 1
         
-        #safe_print(f"DEBUG: Processed {rows_processed} rows for column '{target_header}'")
-    
+        safe_print(f"DEBUG: Processed {rows_processed} rows for column '{target_header}'")
     def clear_column_data(self, col_idx: int, max_row: int):
         """Clear data in a column (keeping formulas intact)"""
         cleared_cells = 0
@@ -577,7 +572,7 @@ class ExcelFormatter:
                     safe_print(f"DEBUG: Skipping ignored column '{header_name}'")
                     skipped_columns += 1
                 else:
-                    # No mapping found - this is normal, just skip
+                    # No mapping found - just skip
                     safe_print(f"DEBUG: No mapping found for '{header_name}' - leaving empty")
                     skipped_columns += 1
 
