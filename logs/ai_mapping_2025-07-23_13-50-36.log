@@ -1,0 +1,36 @@
+2025/07/23 13:50:36 === AI Mapping Session Started ===
+2025/07/23 13:50:36 Starting AI mapping generation for 14 unmapped columns
+2025/07/23 13:50:36 API key found, initializing AI mapper
+2025/07/23 13:50:36 Sending request to AI with 14 unmapped columns and 46 target columns
+2025/07/23 13:50:36 Building prompt for 14 scanned columns and 46 target columns
+2025/07/23 13:50:36 Generated prompt length: 1864 characters
+2025/07/23 13:50:36 Sending request to Gemini API...
+2025/07/23 13:50:39 Received response from Gemini API, length: 536 characters
+2025/07/23 13:50:39 Raw AI response:
+Ciro|Tavsiye Ciro|0.95
+LPNP %|LPNP Check|0.85
+LPNP June|NO_MATCH|0.2
+LPNP May'24|LPNP Check|0.85
+MS&P Support %|MS&P SD %|0.90
+MS&P Support Item|MS&P SD Item|0.90
+MS&P Support Total|NO_MATCH|0.3
+Reyon|NO_MATCH|0.1
+Satış Forecast Adet|NO_MATCH|0.4
+Tahmini Adet|NO_MATCH|0.4
+İndirim Oranı|Tavsiye İndirim Oranı|0.90
+İndirim Öncesi Kar Marjı|İndirim Öncesi Tavsiye Kar Marjı|0.85
+İndirimde       Kar Marjı|İndirimde Tavsiye       Kar Marjı|0.85
+İndirimde       Tavsiye Kar Marjı|İndirimde Tavsiye       Kar Marjı|0.95
+
+2025/07/23 13:50:39 Successfully parsed 9 mappings from AI response
+2025/07/23 13:50:39 AI generation completed successfully, received 9 mappings
+2025/07/23 13:50:39 AI suggested: 'Ciro' → 'Tavsiye Ciro' (0.95 confidence)
+2025/07/23 13:50:39 AI suggested: 'LPNP %' → 'LPNP Check' (0.85 confidence)
+2025/07/23 13:50:39 AI suggested: 'LPNP May'24' → 'LPNP Check' (0.85 confidence)
+2025/07/23 13:50:39 AI suggested: 'MS&P Support %' → 'MS&P SD %' (0.90 confidence)
+2025/07/23 13:50:39 AI suggested: 'MS&P Support Item' → 'MS&P SD Item' (0.90 confidence)
+2025/07/23 13:50:39 AI suggested: 'İndirim Oranı' → 'Tavsiye İndirim Oranı' (0.90 confidence)
+2025/07/23 13:50:39 AI suggested: 'İndirim Öncesi Kar Marjı' → 'İndirim Öncesi Tavsiye Kar Marjı' (0.85 confidence)
+2025/07/23 13:50:39 AI suggested: 'İndirimde       Kar Marjı' → 'İndirimde Tavsiye       Kar Marjı' (0.85 confidence)
+2025/07/23 13:50:39 AI suggested: 'İndirimde       Tavsiye Kar Marjı' → 'İndirimde Tavsiye       Kar Marjı' (0.95 confidence)
+2025/07/23 13:50:39 Returning 9 suggestions to TUI

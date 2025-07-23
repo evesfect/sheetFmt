@@ -16,7 +16,12 @@ const (
 	stateSelectScanned state = iota
 	stateSelectTarget
 	stateConfirm
+	stateAILoading
 )
+
+// Messages for async operations
+type aiMappingsMsg map[string]string
+type aiErrorMsg error
 
 // UIConfig represents UI configuration settings
 type UIConfig struct {
@@ -30,10 +35,12 @@ type model struct {
 	targetColumns  []string
 	mappings       map[string]string // scanned -> target
 	ignored        map[string]bool   // scanned -> ignored
+	aiSuggestions  map[string]string // scanned -> AI suggested target
 
 	// UI state
 	state          state
 	currentScanned string
+	aiLoading      bool
 
 	// Grid navigation for scanned columns
 	page         int
@@ -57,13 +64,15 @@ type model struct {
 	total  int
 
 	// Styling
-	titleStyle    lipgloss.Style
-	selectedStyle lipgloss.Style
-	normalStyle   lipgloss.Style
-	helpStyle     lipgloss.Style
-	progressStyle lipgloss.Style
-	mappedStyle   lipgloss.Style
-	ignoredStyle  lipgloss.Style
+	titleStyle     lipgloss.Style
+	selectedStyle  lipgloss.Style
+	normalStyle    lipgloss.Style
+	helpStyle      lipgloss.Style
+	progressStyle  lipgloss.Style
+	mappedStyle    lipgloss.Style
+	ignoredStyle   lipgloss.Style
+	aiSuggestStyle lipgloss.Style
+	loadingStyle   lipgloss.Style
 }
 
 // Initialize the model with config
@@ -73,6 +82,7 @@ func initialModel(scannedColumns, targetColumns []string, uiConfig UIConfig) mod
 		targetColumns:  targetColumns,
 		mappings:       make(map[string]string),
 		ignored:        make(map[string]bool),
+		aiSuggestions:  make(map[string]string),
 		state:          stateSelectScanned,
 		page:           0,
 		row:            0,
@@ -84,8 +94,8 @@ func initialModel(scannedColumns, targetColumns []string, uiConfig UIConfig) mod
 		targetPage:     0,
 		targetPerPage:  15,
 		total:          len(scannedColumns),
+		aiLoading:      false,
 
-		// ... styling stays the same
 		titleStyle: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("205")).
@@ -110,11 +120,72 @@ func initialModel(scannedColumns, targetColumns []string, uiConfig UIConfig) mod
 			Foreground(lipgloss.Color("240")).
 			Strikethrough(true).
 			Padding(0, 1),
+		aiSuggestStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			Italic(true).
+			Padding(0, 1),
+		loadingStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("99")).
+			Bold(true),
 	}
 }
 
 func (m model) Init() tea.Cmd {
 	return nil
+}
+
+// Command to generate AI mappings asynchronously
+func generateAIMappingsCmd(unmappedColumns, targetColumns []string) tea.Cmd {
+	return func() tea.Msg {
+		// Initialize debug logging
+		if debugLogger == nil {
+			initDebugLogger()
+		}
+
+		debugLog("Starting AI mapping generation for %d unmapped columns", len(unmappedColumns))
+
+		apiKey := GetGeminiAPIKey()
+		if apiKey == "" {
+			err := fmt.Errorf("GEMINI_API_KEY not found in environment variables")
+			debugLog("ERROR: %v", err)
+			saveAIMappingsToFile(unmappedColumns, targetColumns, nil, err)
+			return aiErrorMsg(err)
+		}
+
+		debugLog("API key found, initializing AI mapper")
+
+		aiMapper, err := NewAIMapper(apiKey)
+		if err != nil {
+			debugLog("ERROR: Failed to initialize AI mapper: %v", err)
+			saveAIMappingsToFile(unmappedColumns, targetColumns, nil, err)
+			return aiErrorMsg(fmt.Errorf("failed to initialize AI mapper: %v", err))
+		}
+		defer aiMapper.Close()
+
+		debugLog("Sending request to AI with %d unmapped columns and %d target columns", len(unmappedColumns), len(targetColumns))
+
+		aiMappings, err := aiMapper.GenerateColumnMappings(unmappedColumns, targetColumns)
+		if err != nil {
+			debugLog("ERROR: AI generation failed: %v", err)
+			saveAIMappingsToFile(unmappedColumns, targetColumns, nil, err)
+			return aiErrorMsg(fmt.Errorf("failed to generate AI mappings: %v", err))
+		}
+
+		debugLog("AI generation completed successfully, received %d mappings", len(aiMappings))
+
+		// Save debug info to file
+		saveAIMappingsToFile(unmappedColumns, targetColumns, aiMappings, nil)
+
+		// Convert to map
+		suggestions := make(map[string]string)
+		for _, mapping := range aiMappings {
+			suggestions[mapping.ScannedColumn] = mapping.TargetColumn
+			debugLog("AI suggested: '%s' → '%s' (%.2f confidence)", mapping.ScannedColumn, mapping.TargetColumn, mapping.Confidence)
+		}
+
+		debugLog("Returning %d suggestions to TUI", len(suggestions))
+		return aiMappingsMsg(suggestions)
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -128,6 +199,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.targetPerPage < 5 {
 			m.targetPerPage = 5
 		}
+
+	case aiMappingsMsg:
+		// AI mappings received
+		m.aiLoading = false
+		m.state = stateSelectScanned
+
+		// Only add AI suggestions for unmapped columns
+		for scanned, target := range msg {
+			// Skip if already mapped or ignored
+			if _, mapped := m.mappings[scanned]; !mapped && !m.ignored[scanned] {
+				m.aiSuggestions[scanned] = target
+			}
+		}
+
+		return m, nil
+
+	case aiErrorMsg:
+		// AI error occurred
+		m.aiLoading = false
+		m.state = stateSelectScanned
+		// Could show error message in status area if needed
+		return m, nil
+
 	case tea.KeyMsg:
 		switch m.state {
 		case stateSelectScanned:
@@ -136,6 +230,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSelectTarget(msg)
 		case stateConfirm:
 			return m.updateConfirm(msg)
+		case stateAILoading:
+			return m.updateAILoading(msg)
 		}
 	}
 	return m, nil
@@ -184,8 +280,21 @@ func (m model) updateSelectScanned(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if currentIdx < len(m.scannedColumns) {
 			m.currentScanned = m.scannedColumns[currentIdx]
 			m.state = stateSelectTarget
-			m.targetCursor = 0
-			m.targetPage = 0
+
+			// Check if there's an AI suggestion for this column
+			if aiTarget, hasAI := m.aiSuggestions[m.currentScanned]; hasAI {
+				// Find the AI suggested target in the target list and pre-select it
+				for i, target := range m.targetColumns {
+					if target == aiTarget {
+						m.targetPage = i / m.targetPerPage
+						m.targetCursor = i % m.targetPerPage
+						break
+					}
+				}
+			} else {
+				m.targetCursor = 0
+				m.targetPage = 0
+			}
 		}
 
 	case "i":
@@ -200,8 +309,31 @@ func (m model) updateSelectScanned(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.ignored[scanned] = true
 				delete(m.mappings, scanned)
+				// Remove AI suggestion if ignoring
+				delete(m.aiSuggestions, scanned)
 				m.mapped++
 			}
+		}
+
+	case "a":
+		// Generate AI mappings for unmapped columns only
+		if !m.aiLoading {
+			// Filter to only unmapped columns
+			var unmappedColumns []string
+			for _, scanned := range m.scannedColumns {
+				if _, mapped := m.mappings[scanned]; !mapped && !m.ignored[scanned] {
+					unmappedColumns = append(unmappedColumns, scanned)
+				}
+			}
+
+			if len(unmappedColumns) == 0 {
+				// No unmapped columns, do nothing
+				break
+			}
+
+			m.aiLoading = true
+			m.state = stateAILoading
+			return m, generateAIMappingsCmd(unmappedColumns, m.targetColumns)
 		}
 
 	case "n":
@@ -257,6 +389,8 @@ func (m model) updateSelectTarget(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			m.mappings[m.currentScanned] = target
 			delete(m.ignored, m.currentScanned)
+			// Remove AI suggestion since it's now manually confirmed
+			delete(m.aiSuggestions, m.currentScanned)
 
 			m.state = stateSelectScanned
 
@@ -274,6 +408,18 @@ func (m model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y":
 		return m, tea.Quit
 	case "esc":
+		m.state = stateSelectScanned
+	}
+	return m, nil
+}
+
+func (m model) updateAILoading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "esc":
+		// Cancel AI loading and go back
+		m.aiLoading = false
 		m.state = stateSelectScanned
 	}
 	return m, nil
@@ -387,6 +533,8 @@ func (m model) View() string {
 		return m.viewSelectTarget()
 	case stateConfirm:
 		return m.viewConfirm()
+	case stateAILoading:
+		return m.viewAILoading()
 	}
 	return ""
 }
@@ -400,8 +548,9 @@ func (m model) viewSelectScanned() string {
 	b.WriteString("\n\n")
 
 	// Progress
-	progress := fmt.Sprintf("Progress: %d/%d mapped (%d ignored)",
-		len(m.mappings), m.total, len(m.ignored))
+	aiCount := len(m.aiSuggestions)
+	progress := fmt.Sprintf("Progress: %d/%d mapped, %d AI suggestions, %d ignored",
+		len(m.mappings), m.total, aiCount, len(m.ignored))
 	b.WriteString(m.progressStyle.Render(progress))
 	b.WriteString("\n\n")
 
@@ -437,6 +586,9 @@ func (m model) viewSelectScanned() string {
 			if target, mapped := m.mappings[column]; mapped {
 				displayText = fmt.Sprintf("%s → %s", column, target)
 				style = m.mappedStyle
+			} else if aiTarget, hasAI := m.aiSuggestions[column]; hasAI {
+				displayText = fmt.Sprintf("%s → %s (AI)", column, aiTarget)
+				style = m.aiSuggestStyle
 			} else if m.ignored[column] {
 				displayText = fmt.Sprintf("%s (ignored)", column)
 				style = m.ignoredStyle
@@ -470,7 +622,7 @@ func (m model) viewSelectScanned() string {
 	b.WriteString("\n")
 
 	// Help
-	help := "↑↓←→: navigate | Enter: select | i: ignore | n: next unmapped | s: save | q: quit"
+	help := "↑↓←→: navigate | Enter: select/confirm AI | i: ignore | a: AI mapping | n: next unmapped | s: save | q: quit"
 	b.WriteString(m.helpStyle.Render(help))
 
 	return b.String()
@@ -479,8 +631,11 @@ func (m model) viewSelectScanned() string {
 func (m model) viewSelectTarget() string {
 	var b strings.Builder
 
-	// Title
+	// Title with AI suggestion info
 	title := fmt.Sprintf("Map '%s' to target column:", m.currentScanned)
+	if aiTarget, hasAI := m.aiSuggestions[m.currentScanned]; hasAI {
+		title += fmt.Sprintf(" (AI suggests: %s)", aiTarget)
+	}
 	b.WriteString(m.titleStyle.Render(title))
 	b.WriteString("\n\n")
 
@@ -504,10 +659,22 @@ func (m model) viewSelectTarget() string {
 		column := m.targetColumns[i]
 		localIndex := i - start
 
+		var style lipgloss.Style
+		prefix := "  "
+
 		if localIndex == m.targetCursor {
-			b.WriteString(m.selectedStyle.Render("> " + column))
+			style = m.selectedStyle
+			prefix = "> "
 		} else {
-			b.WriteString(m.normalStyle.Render("  " + column))
+			style = m.normalStyle
+		}
+
+		// Highlight AI suggestions
+		if aiTarget, hasAI := m.aiSuggestions[m.currentScanned]; hasAI && column == aiTarget {
+			displayText := column + " (AI suggestion)"
+			b.WriteString(style.Render(prefix + displayText))
+		} else {
+			b.WriteString(style.Render(prefix + column))
 		}
 		b.WriteString("\n")
 	}
@@ -528,18 +695,44 @@ func (m model) viewConfirm() string {
 	b.WriteString("\n\n")
 
 	// Summary
+	aiCount := len(m.aiSuggestions)
 	b.WriteString(fmt.Sprintf("Total columns: %d\n", m.total))
 	b.WriteString(fmt.Sprintf("Mapped: %d\n", len(m.mappings)))
+	b.WriteString(fmt.Sprintf("AI suggestions (unconfirmed): %d\n", aiCount))
 	b.WriteString(fmt.Sprintf("Ignored: %d\n", len(m.ignored)))
-	b.WriteString(fmt.Sprintf("Unmapped: %d\n", m.total-len(m.mappings)-len(m.ignored)))
+	b.WriteString(fmt.Sprintf("Unmapped: %d\n", m.total-len(m.mappings)-len(m.ignored)-aiCount))
 	b.WriteString("\n")
+
+	if aiCount > 0 {
+		b.WriteString(m.helpStyle.Render("Note: AI suggestions will not be saved. Only confirmed mappings will be saved."))
+		b.WriteString("\n\n")
+	}
 
 	b.WriteString(m.helpStyle.Render("y/n to confirm, Esc to go back"))
 
 	return b.String()
 }
 
-// RunMappingTUI starts the interactive mapping interface
+func (m model) viewAILoading() string {
+	var b strings.Builder
+
+	// Title
+	title := m.titleStyle.Width(m.width).Render("Column Mapping Tool")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	// Loading message
+	loading := "Generating AI mapping suggestions..."
+	b.WriteString(m.loadingStyle.Render(loading))
+	b.WriteString("\n\n")
+
+	// Help
+	help := "Esc: cancel | q: quit"
+	b.WriteString(m.helpStyle.Render(help))
+
+	return b.String()
+}
+
 // RunMappingTUI starts the interactive mapping interface
 func RunMappingTUI(scannedColumnsFile, targetColumnsFile, outputMappingFile string, uiConfig UIConfig) error {
 	scannedColumns, err := ReadColumnsFromFile(scannedColumnsFile)
@@ -566,7 +759,7 @@ func RunMappingTUI(scannedColumnsFile, targetColumnsFile, outputMappingFile stri
 
 	// Load existing mappings if the file exists
 	if existingConfig, err := LoadFromFile(outputMappingFile); err == nil {
-		fmt.Printf("📂 Loading existing mappings from %s\n", outputMappingFile)
+		fmt.Printf("Loading existing mappings from %s\n", outputMappingFile)
 
 		// Apply existing mappings to the model
 		for _, mapping := range existingConfig.Mappings {
@@ -613,6 +806,14 @@ func RunMappingTUI(scannedColumnsFile, targetColumnsFile, outputMappingFile stri
 		fmt.Printf("🔗 Auto-mapped %d exact matches\n", autoMappedCount)
 	}
 
+	// Show API key status
+	apiKey := GetGeminiAPIKey()
+	if apiKey != "" {
+		fmt.Printf("AI mapping available (press 'a' to generate suggestions)\n")
+	} else {
+		fmt.Printf("ℹ️  Set GEMINI_API_KEY to enable AI mapping (press 'a')\n")
+	}
+
 	// Move to first unmapped column
 	m.moveToNextUnmapped()
 
@@ -628,10 +829,10 @@ func RunMappingTUI(scannedColumnsFile, targetColumnsFile, outputMappingFile stri
 
 	// Check if user wants to save (if they pressed 's' and confirmed with 'y')
 	if final.state == stateConfirm {
-		// Create mapping config
+		// Create mapping config (only save confirmed mappings, not AI suggestions)
 		config := &MappingConfig{}
 
-		// Add all mappings
+		// Add all confirmed mappings
 		for scanned, target := range final.mappings {
 			config.Mappings = append(config.Mappings, ColumnMapping{
 				ScannedColumn: scanned,
@@ -655,8 +856,12 @@ func RunMappingTUI(scannedColumnsFile, targetColumnsFile, outputMappingFile stri
 			return fmt.Errorf("failed to save mapping configuration: %v", err)
 		}
 
+		aiSuggestionCount := len(final.aiSuggestions)
 		fmt.Printf("✓ Mapping configuration saved to: %s\n", outputMappingFile)
 		fmt.Printf("✓ Mapped %d columns, ignored %d columns\n", len(final.mappings), len(final.ignored))
+		if aiSuggestionCount > 0 {
+			fmt.Printf("ℹ️  %d AI suggestions were not confirmed and not saved\n", aiSuggestionCount)
+		}
 	}
 
 	return nil

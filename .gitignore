@@ -35,3 +35,4 @@ go.work.sum
 data/
 C4*
 myenv/
+logs/
