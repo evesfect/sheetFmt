@@ -581,6 +581,7 @@ class ExcelFormatter:
             # Clean formula-only and empty rows within the data first
             self.clean_formula_only_rows_func()
             
+            '''
             # NOW detect the table end row after importing data
             actual_data_end_row = self.detect_table_end_row(self.target_ws, self.target_header_row)
             safe_print(f"DEBUG: Actual imported data ends at row: {actual_data_end_row}")
@@ -598,6 +599,8 @@ class ExcelFormatter:
 
             self.target_ws.cell(row=actual_data_end_row + 4, column=1).value = "*Fiyatlandırma ve promosyon akitiviteleri ile ilgili nihai karar müşterinindir"
             self.target_ws.cell(row=actual_data_end_row + 5, column=1).value = "*P&G'nin müşteri karlılığı üzerinde herhangi bir belirleyiciliği olmayıp, iligli kar marjı sütunları tavsiye kar marjlarıdır, nihai karar müşterinindir"
+            
+            '''
             
             safe_print(f"DEBUG: Summary - Processed: {processed_columns}, Mapped: {mapped_columns}, Formula columns: {len(self.column_formulas)}, Errors: {len(self.error_messages)}")
             
