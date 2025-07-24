@@ -73,7 +73,7 @@ func (ai *AIMapper) GenerateColumnMappings(scannedColumns, targetColumns []strin
 
 	debugLog("Building prompt for %d scanned columns and %d target columns", len(scannedColumns), len(targetColumns))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Second)
 	defer cancel()
 
 	prompt := ai.buildMappingPrompt(scannedColumns, targetColumns)

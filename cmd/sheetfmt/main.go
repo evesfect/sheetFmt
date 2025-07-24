@@ -8,6 +8,7 @@ import (
 	"sheetFmt/internal/config"
 	"sheetFmt/internal/excel"
 	"sheetFmt/internal/mapping"
+	"strings"
 )
 
 func main() {
@@ -44,10 +45,100 @@ func main() {
 			return
 		}
 		runConvertCandidate(cfg, os.Args[2])
+	case "format-all":
+		runFormatAll(cfg)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
 	}
+}
+
+func runFormatAll(cfg *config.Config) {
+	fmt.Println("\nFormatting all Excel files in input directory...")
+
+	// Check if mapping file exists
+	mappingFilePath := filepath.Join(cfg.Scan.OutputDirectory, "column_mapping.json")
+	if _, err := os.Stat(mappingFilePath); os.IsNotExist(err) {
+		fmt.Printf("Mapping file not found: %s\n", mappingFilePath)
+		fmt.Println("Please run 'sheetfmt map' first to create column mappings.")
+		return
+	}
+
+	// Get all .xlsx files in input directory
+	xlsxFiles, err := getXlsxFiles(cfg.Scan.InputDirectory)
+	if err != nil {
+		log.Fatal("Error getting Excel files:", err)
+	}
+
+	if len(xlsxFiles) == 0 {
+		fmt.Printf("No .xlsx files found in directory: %s\n", cfg.Scan.InputDirectory)
+		return
+	}
+
+	fmt.Printf("Found %d Excel files to format\n", len(xlsxFiles))
+
+	// Create results directory
+	resultsDir := filepath.Join(cfg.Scan.OutputDirectory, "results")
+	err = os.MkdirAll(resultsDir, 0755)
+	if err != nil {
+		log.Fatal("Error creating results directory:", err)
+	}
+
+	// Track statistics
+	successCount := 0
+	errorCount := 0
+
+	// Process each file
+	for i, inputFile := range xlsxFiles {
+		fmt.Printf("\n[%d/%d] Processing: %s\n", i+1, len(xlsxFiles), filepath.Base(inputFile))
+
+		err := excel.FormatFile(
+			inputFile,
+			cfg.Format.TargetFormatFile,
+			mappingFilePath,
+			cfg.Format.TargetSheet,
+			cfg.Format.FormulaRow,
+			cfg.Format.TableEndTolerance,
+			cfg.Format.CleanFormulaOnlyRows,
+		)
+
+		if err != nil {
+			fmt.Printf("❌ Error formatting file: %v\n", err)
+			errorCount++
+		} else {
+			fmt.Printf("✓ Successfully formatted\n")
+			successCount++
+		}
+	}
+
+	// Print summary
+	fmt.Printf("\n========================================\n")
+	fmt.Printf("Formatting complete!\n")
+	fmt.Printf("✓ Success: %d files\n", successCount)
+	if errorCount > 0 {
+		fmt.Printf("❌ Errors: %d files\n", errorCount)
+		fmt.Printf("Check data/problematic directory for files with errors\n")
+	}
+	fmt.Printf("Results saved to: %s\n", resultsDir)
+}
+
+// Helper function to get all .xlsx files in a directory
+func getXlsxFiles(dir string) ([]string, error) {
+	var xlsxFiles []string
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() && strings.ToLower(filepath.Ext(path)) == ".xlsx" {
+			xlsxFiles = append(xlsxFiles, path)
+		}
+
+		return nil
+	})
+
+	return xlsxFiles, err
 }
 
 func printUsage() {
@@ -56,6 +147,7 @@ func printUsage() {
 	fmt.Println("  sheetfmt scan                         - Scan Excel files for column names")
 	fmt.Println("  sheetfmt map                          - Open interactive mapping tool")
 	fmt.Println("  sheetfmt format <input_file>          - Format single Excel file")
+	fmt.Println("  sheetfmt format-all                   - Format all Excel files in input directory")
 	fmt.Println("  sheetfmt append-target-headers        - Add target format headers to target_columns file")
 	fmt.Println("  sheetfmt convert-candidate <file>     - Convert candidate format to target format")
 }
