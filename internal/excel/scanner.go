@@ -5,10 +5,48 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sheetFmt/internal/logger"
 	"sort"
 	"strings"
 )
+
+// cleanColumnName cleans column names by removing HTML tags, extra whitespace, and taking first line
+func cleanColumnName(rawName string) string {
+	if rawName == "" {
+		return ""
+	}
+
+	// Convert to string and strip basic whitespace
+	cleaned := strings.TrimSpace(rawName)
+
+	// Remove HTML/XML tags using regex
+	// This handles both self-closing and regular tags
+	htmlTagRegex := regexp.MustCompile(`<[^>]+>`)
+	cleaned = htmlTagRegex.ReplaceAllString(cleaned, "")
+
+	// Split by newlines and take the first non-empty line
+	lines := strings.Split(cleaned, "\n")
+	var firstLine string
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine != "" {
+			firstLine = trimmedLine
+			break
+		}
+	}
+
+	if firstLine == "" {
+		return ""
+	}
+
+	// Remove extra whitespace and normalize (replace multiple spaces with single space)
+	spaceRegex := regexp.MustCompile(`\s+`)
+	cleaned = spaceRegex.ReplaceAllString(firstLine, " ")
+	cleaned = strings.TrimSpace(cleaned)
+
+	return cleaned
+}
 
 // ScanAllColumnsInDirectory scans all .xlsx files in the specified directory
 // and extracts all unique column names from all sheets, saving them to scanned_columns file
@@ -38,13 +76,15 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 
 	// Set to store unique column names
 	uniqueColumns := make(map[string]bool)
+	// Track cleaning for debugging
+	cleaningStats := make(map[string]string) // cleaned -> original (for first occurrence)
 
 	// Process each Excel file
 	for _, filePath := range xlsxFiles {
 		fileName := filepath.Base(filePath)
 		logger.Info("Scanning file", "file", fileName)
 
-		err := scanFileColumns(filePath, uniqueColumns)
+		err := scanFileColumns(filePath, uniqueColumns, cleaningStats)
 		if err != nil {
 			logger.Warn("Failed to scan file", "file", fileName, "error", err)
 			continue
@@ -60,6 +100,19 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 	}
 	sort.Strings(columnNames)
 
+	// Log cleaning statistics
+	cleanedCount := 0
+	for cleaned, original := range cleaningStats {
+		if cleaned != original {
+			cleanedCount++
+			logger.Debug("Column name cleaned", "original", original, "cleaned", cleaned)
+		}
+	}
+
+	logger.Info("Column name processing completed",
+		"total_unique_columns", len(columnNames),
+		"cleaned_columns", cleanedCount)
+
 	// Write to scanned_columns file in output directory
 	outputFilePath := filepath.Join(outputDir, "scanned_columns")
 	err = writeColumnsToFile(outputFilePath, columnNames)
@@ -74,27 +127,8 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 	return nil
 }
 
-// getXlsxFiles returns all .xlsx files in the specified directory
-func getXlsxFiles(dir string) ([]string, error) {
-	var xlsxFiles []string
-
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if !info.IsDir() && strings.ToLower(filepath.Ext(path)) == ".xlsx" {
-			xlsxFiles = append(xlsxFiles, path)
-		}
-
-		return nil
-	})
-
-	return xlsxFiles, err
-}
-
 // scanFileColumns scans all sheets in a single Excel file and adds column names to the set
-func scanFileColumns(filePath string, uniqueColumns map[string]bool) error {
+func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningStats map[string]string) error {
 	// Open the Excel file
 	editor, err := OpenFile(filePath)
 	if err != nil {
@@ -116,11 +150,22 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool) error {
 			continue
 		}
 
-		// Add each header to the unique set
+		// Add each header to the unique set after cleaning
 		for _, header := range headers {
-			trimmedHeader := strings.TrimSpace(header)
-			if trimmedHeader != "" {
-				uniqueColumns[trimmedHeader] = true
+			rawHeader := strings.TrimSpace(header)
+			if rawHeader == "" {
+				continue
+			}
+
+			// Clean the header name
+			cleanHeader := cleanColumnName(rawHeader)
+			if cleanHeader != "" {
+				uniqueColumns[cleanHeader] = true
+
+				// Track cleaning for debugging (only store first occurrence)
+				if _, exists := cleaningStats[cleanHeader]; !exists {
+					cleaningStats[cleanHeader] = rawHeader
+				}
 			}
 		}
 
@@ -128,6 +173,25 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool) error {
 	}
 
 	return nil
+}
+
+// getXlsxFiles returns all .xlsx files in the specified directory
+func getXlsxFiles(dir string) ([]string, error) {
+	var xlsxFiles []string
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() && strings.ToLower(filepath.Ext(path)) == ".xlsx" {
+			xlsxFiles = append(xlsxFiles, path)
+		}
+
+		return nil
+	})
+
+	return xlsxFiles, err
 }
 
 // writeColumnsToFile writes the column names to a plain text file

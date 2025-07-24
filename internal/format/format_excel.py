@@ -2,6 +2,7 @@
 import json
 import sys
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 from openpyxl import load_workbook
@@ -10,6 +11,30 @@ import shutil
 import logging
 from datetime import datetime
 
+
+def clean_column_name(raw_name: str) -> str:
+    """Clean column names by removing HTML tags, extra whitespace, and taking first line"""
+    if not raw_name:
+        return ""
+    
+    # Convert to string and strip basic whitespace
+    cleaned = str(raw_name).strip()
+    
+    # Remove HTML/XML tags using regex
+    # This handles both self-closing and regular tags
+    cleaned = re.sub(r'<[^>]+>', '', cleaned)
+    
+    # Split by newlines and take the first non-empty line
+    lines = [line.strip() for line in cleaned.split('\n') if line.strip()]
+    if lines:
+        cleaned = lines[0]
+    else:
+        cleaned = ""
+    
+    # Remove extra whitespace and normalize
+    cleaned = ' '.join(cleaned.split())
+    
+    return cleaned
 
 def setup_logging():
     """Setup logging configuration with Unicode support"""
@@ -115,7 +140,9 @@ class ExcelFormatter:
             logger.debug(f"Total ignored: {ignored_count}")
             
             # Load Excel files
-            self.input_wb = load_workbook(self.input_file, data_only=False)
+            # CHANGED: Load input file with data_only=True to get calculated values, not formulas
+            self.input_wb = load_workbook(self.input_file, data_only=True)
+            # Keep target file with data_only=False to preserve its structure
             self.target_wb = load_workbook(self.target_file, data_only=False)
             
             # Get worksheets
@@ -244,9 +271,20 @@ class ExcelFormatter:
         for col_idx in range(1, self.input_ws.max_column + 1):
             cell = self.input_ws.cell(row=input_header_row, column=col_idx)
             if cell.value:
-                header_value = str(cell.value).strip()
-                headers[header_value] = col_idx
-                logger.debug(f"  Column {col_idx}: '{header_value}'")
+                raw_header = str(cell.value).strip()
+                # NEW: Clean the header name
+                clean_header = clean_column_name(raw_header)
+                
+                if clean_header:  # Only add if we have a clean name
+                    headers[clean_header] = col_idx
+                    
+                    # Log both raw and cleaned versions if they're different
+                    if raw_header != clean_header:
+                        logger.debug(f"  Column {col_idx}: '{clean_header}' (cleaned from: '{raw_header[:50]}...')")
+                    else:
+                        logger.debug(f"  Column {col_idx}: '{clean_header}'")
+                else:
+                    logger.debug(f"  Column {col_idx}: [EMPTY after cleaning] (raw: '{raw_header[:50]}...')")
         
         # Store the header row for later use
         self.input_header_row = input_header_row
@@ -309,26 +347,39 @@ class ExcelFormatter:
         
         return applicable_mappings
     
+    
+
     def copy_cell_value_with_type_preservation(self, source_cell, target_cell):
-        """Copy cell value and data type from source to target"""
-        # Copy the value with type preservation
-        if source_cell.data_type == 'f':  # Formula
-            target_cell.value = source_cell.value
-        elif source_cell.data_type == 'd':  # Date
-            target_cell.value = source_cell.value
-        elif source_cell.data_type == 'n':  # Number
-            target_cell.value = source_cell.value
-        elif source_cell.data_type == 'b':  # Boolean
-            target_cell.value = source_cell.value
-        else:  # String or other
-            target_cell.value = source_cell.value
+        """Copy cell value (never formulas) and data type from source to target"""
         
-        # Copy number format to preserve data type appearance
-        if source_cell.number_format != 'General':
+        # Get the actual value (never a formula)
+        source_value = source_cell.value
+        
+        # Extra safety check: if somehow a formula string got through, don't copy it
+        if isinstance(source_value, str) and source_value.startswith('='):
+            logger.warning(f"Detected formula string in source cell, skipping: {source_value[:50]}...")
+            return  # Don't copy formulas
+        
+        # Copy the calculated value with type preservation
+        if source_cell.data_type == 'd':  # Date
+            target_cell.value = source_value
+        elif source_cell.data_type == 'n':  # Number
+            target_cell.value = source_value
+        elif source_cell.data_type == 'b':  # Boolean
+            target_cell.value = source_value
+        else:  # String or other (but not formula since we loaded with data_only=True)
+            target_cell.value = source_value
+        
+        # Copy number format to preserve data type appearance (but not if it's a formula format)
+        if source_cell.number_format and source_cell.number_format != 'General':
             target_cell.number_format = source_cell.number_format
+        
+        # Log what we're copying for debugging
+        if source_value is not None:
+            logger.debug(f"Copied value: {source_value} (type: {source_cell.data_type})")
     
     def process_column_with_mapping(self, target_col_idx: int, target_header: str, 
-                               input_column: str, input_headers: Dict[str, int]):
+                           input_column: str, input_headers: Dict[str, int]):
         """Process a column that has data mapping"""
         logger.debug(f"Processing column '{target_header}' mapped from '{input_column}'")
         
@@ -341,6 +392,7 @@ class ExcelFormatter:
         # Process each data row from input file (starting after header row)
         rows_processed = 0
         cells_copied = 0
+        formulas_skipped = 0  # Track skipped formulas
         input_data_start_row = self.input_header_row + 1
         target_data_start_row = self.target_header_row + 1
         
@@ -354,15 +406,24 @@ class ExcelFormatter:
             input_cell = self.input_ws.cell(row=input_row_idx, column=input_col_idx)
             target_cell = self.target_ws.cell(row=target_row_idx, column=target_col_idx)
             
-            # Log what we're copying
+            # Additional safety check for formulas
             input_value = input_cell.value
+            if isinstance(input_value, str) and input_value.startswith('='):
+                logger.warning(f"Skipping formula at input[{input_row_idx},{input_col_idx}]: {input_value[:30]}...")
+                formulas_skipped += 1
+                continue
+            
+            # Log what we're copying (only non-empty, non-formula values)
             if input_value is not None and str(input_value).strip() != "":
                 logger.debug(f"Copying from input[{input_row_idx},{input_col_idx}] = '{input_value}' to target[{target_row_idx},{target_col_idx}]")
                 cells_copied += 1
             
-            # Copy data
+            # Copy data (this method now has additional formula protection)
             self.copy_cell_value_with_type_preservation(input_cell, target_cell)
             rows_processed += 1
+        
+        if formulas_skipped > 0:
+            logger.warning(f"Skipped {formulas_skipped} formula cells in column '{target_header}'")
         
         logger.debug(f"Processed {rows_processed} rows for column '{target_header}', copied {cells_copied} non-empty cells")
 
