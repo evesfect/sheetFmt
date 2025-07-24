@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sheetFmt/internal/logger"
 	"sort"
 	"strings"
 )
@@ -29,22 +30,23 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 	}
 
 	if len(xlsxFiles) == 0 {
-		fmt.Printf("No .xlsx files found in directory: %s\n", inputDir)
+		logger.Warn("No .xlsx files found in directory", "directory", inputDir)
 		return nil
 	}
 
-	fmt.Printf("Found %d .xlsx files to scan\n", len(xlsxFiles))
+	logger.Info("Starting scan", "file_count", len(xlsxFiles), "directory", inputDir)
 
 	// Set to store unique column names
 	uniqueColumns := make(map[string]bool)
 
 	// Process each Excel file
 	for _, filePath := range xlsxFiles {
-		fmt.Printf("Scanning file: %s\n", filepath.Base(filePath))
+		fileName := filepath.Base(filePath)
+		logger.Info("Scanning file", "file", fileName)
 
 		err := scanFileColumns(filePath, uniqueColumns)
 		if err != nil {
-			fmt.Printf("Warning: Failed to scan file %s: %v\n", filepath.Base(filePath), err)
+			logger.Warn("Failed to scan file", "file", fileName, "error", err)
 			continue
 		}
 	}
@@ -65,9 +67,9 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 		return fmt.Errorf("failed to write columns to file: %v", err)
 	}
 
-	fmt.Printf("✓ Scanning completed successfully!\n")
-	fmt.Printf("✓ Found %d unique column names across all files\n", len(columnNames))
-	fmt.Printf("✓ Results saved to '%s' file\n", outputFilePath)
+	logger.Info("Scanning completed successfully",
+		"unique_columns", len(columnNames),
+		"output_file", outputFilePath)
 
 	return nil
 }
@@ -105,20 +107,12 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool) error {
 
 	// Process each sheet
 	for _, sheetName := range sheetNames {
-		fmt.Printf("  - Scanning sheet: %s\n", sheetName)
-
-		// Detect header row first
-		headerRow, err := editor.DetectHeaderRow(sheetName)
-		if err != nil {
-			fmt.Printf("    Warning: Failed to detect header row in sheet %s: %v\n", sheetName, err)
-			continue
-		}
-		fmt.Printf("    Detected header row: %d\n", headerRow)
+		logger.Debug("Scanning sheet", "sheet", sheetName, "file", filepath.Base(filePath))
 
 		// Get column headers from this sheet
 		headers, err := editor.GetColumnHeaders(sheetName)
 		if err != nil {
-			fmt.Printf("    Warning: Failed to read headers from sheet %s: %v\n", sheetName, err)
+			logger.Warn("Failed to read headers", "sheet", sheetName, "error", err)
 			continue
 		}
 
@@ -130,7 +124,7 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool) error {
 			}
 		}
 
-		fmt.Printf("    Found %d column headers\n", len(headers))
+		logger.Debug("Found headers in sheet", "sheet", sheetName, "header_count", len(headers))
 	}
 
 	return nil

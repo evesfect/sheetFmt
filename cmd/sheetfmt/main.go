@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sheetFmt/internal/config"
 	"sheetFmt/internal/excel"
+	"sheetFmt/internal/logger"
 	"sheetFmt/internal/mapping"
 	"strings"
 )
@@ -21,7 +21,9 @@ func main() {
 
 	cfg, err := config.LoadConfig("configs/config.toml")
 	if err != nil {
-		log.Fatal("Error loading config:", err)
+		logger.Error("Failed to load config", "error", err)
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
 	}
 
 	switch command {
@@ -38,13 +40,6 @@ func main() {
 		runFormat(cfg, os.Args[2])
 	case "append-target-headers":
 		runAppendTargetHeaders(cfg)
-	case "convert-candidate":
-		if len(os.Args) < 3 {
-			fmt.Println("Error: convert-candidate command requires candidate file path")
-			fmt.Println("Usage: sheetfmt convert-candidate <candidate_file_path>")
-			return
-		}
-		runConvertCandidate(cfg, os.Args[2])
 	case "format-all":
 		runFormatAll(cfg)
 	default:
@@ -54,7 +49,7 @@ func main() {
 }
 
 func runFormatAll(cfg *config.Config) {
-	fmt.Println("\nFormatting all Excel files in input directory...")
+	logger.Info("Starting format-all operation", "input_directory", cfg.Scan.InputDirectory)
 
 	// Check if mapping file exists
 	mappingFilePath := filepath.Join(cfg.Scan.OutputDirectory, "column_mapping.json")
@@ -67,7 +62,9 @@ func runFormatAll(cfg *config.Config) {
 	// Get all .xlsx files in input directory
 	xlsxFiles, err := getXlsxFiles(cfg.Scan.InputDirectory)
 	if err != nil {
-		log.Fatal("Error getting Excel files:", err)
+		logger.Error("Failed to get Excel files", "error", err)
+		fmt.Printf("Error getting Excel files: %v\n", err)
+		return
 	}
 
 	if len(xlsxFiles) == 0 {
@@ -75,13 +72,15 @@ func runFormatAll(cfg *config.Config) {
 		return
 	}
 
-	fmt.Printf("Found %d Excel files to format\n", len(xlsxFiles))
+	logger.Info("Found files to format", "file_count", len(xlsxFiles))
 
 	// Create results directory
 	resultsDir := filepath.Join(cfg.Scan.OutputDirectory, "results")
 	err = os.MkdirAll(resultsDir, 0755)
 	if err != nil {
-		log.Fatal("Error creating results directory:", err)
+		logger.Error("Failed to create results directory", "error", err)
+		fmt.Printf("Error creating results directory: %v\n", err)
+		return
 	}
 
 	// Track statistics
@@ -90,28 +89,36 @@ func runFormatAll(cfg *config.Config) {
 
 	// Process each file
 	for i, inputFile := range xlsxFiles {
-		fmt.Printf("\n[%d/%d] Processing: %s\n", i+1, len(xlsxFiles), filepath.Base(inputFile))
+		fileName := filepath.Base(inputFile)
+		fmt.Printf("\n[%d/%d] Processing: %s\n", i+1, len(xlsxFiles), fileName)
+
+		logger.Info("Processing file", "file", fileName, "progress", fmt.Sprintf("%d/%d", i+1, len(xlsxFiles)))
 
 		err := excel.FormatFile(
 			inputFile,
 			cfg.Format.TargetFormatFile,
 			mappingFilePath,
 			cfg.Format.TargetSheet,
-			cfg.Format.FormulaRow,
 			cfg.Format.TableEndTolerance,
 			cfg.Format.CleanFormulaOnlyRows,
 		)
 
 		if err != nil {
+			logger.Error("Failed to format file", "file", fileName, "error", err)
 			fmt.Printf("❌ Error formatting file: %v\n", err)
 			errorCount++
 		} else {
+			logger.Info("Successfully formatted file", "file", fileName)
 			fmt.Printf("✓ Successfully formatted\n")
 			successCount++
 		}
 	}
 
 	// Print summary
+	logger.Info("Format-all operation completed",
+		"success_count", successCount,
+		"error_count", errorCount)
+
 	fmt.Printf("\n========================================\n")
 	fmt.Printf("Formatting complete!\n")
 	fmt.Printf("✓ Success: %d files\n", successCount)
@@ -149,26 +156,16 @@ func printUsage() {
 	fmt.Println("  sheetfmt format <input_file>          - Format single Excel file")
 	fmt.Println("  sheetfmt format-all                   - Format all Excel files in input directory")
 	fmt.Println("  sheetfmt append-target-headers        - Add target format headers to target_columns file")
-	fmt.Println("  sheetfmt convert-candidate <file>     - Convert candidate format to target format")
-}
-
-func runConvertCandidate(cfg *config.Config, candidateFilePath string) {
-	fmt.Println("\nConverting candidate format to target format...")
-	err := excel.ConvertCandidateToTargetFormat(
-		candidateFilePath,
-		cfg.Format.TargetFormatFile,
-		cfg.Format.FormulaRow,
-	)
-	if err != nil {
-		log.Fatal("Error converting candidate format:", err)
-	}
 }
 
 func runScan(cfg *config.Config) {
+	logger.Info("Starting scan operation")
 	fmt.Println("\nScanning Excel files for column names...")
 	err := excel.ScanAllColumnsInDirectory(cfg.Scan.InputDirectory, cfg.Scan.OutputDirectory)
 	if err != nil {
-		log.Fatal("Error scanning Excel files:", err)
+		logger.Error("Scan operation failed", "error", err)
+		fmt.Printf("Error scanning Excel files: %v\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -177,9 +174,16 @@ func runMapping(cfg *config.Config) {
 	targetColumnsFile := filepath.Join(cfg.Scan.OutputDirectory, "target_columns")
 	mappingOutputFile := filepath.Join(cfg.Scan.OutputDirectory, "column_mapping.json")
 
+	logger.Info("Starting mapping operation",
+		"scanned_file", scannedColumnsFile,
+		"target_file", targetColumnsFile,
+		"output_file", mappingOutputFile)
+
 	err := mapping.CreateDefaultTargetColumnsFile(targetColumnsFile)
 	if err != nil {
-		log.Fatal("Error creating target columns file:", err)
+		logger.Error("Failed to create target columns file", "error", err)
+		fmt.Printf("Error creating target columns file: %v\n", err)
+		os.Exit(1)
 	}
 
 	if _, err := os.Stat(scannedColumnsFile); os.IsNotExist(err) {
@@ -202,30 +206,36 @@ func runMapping(cfg *config.Config) {
 
 	err = mapping.RunMappingTUI(scannedColumnsFile, targetColumnsFile, mappingOutputFile, uiConfig)
 	if err != nil {
-		log.Fatal("Error running mapping tool:", err)
+		logger.Error("Mapping operation failed", "error", err)
+		fmt.Printf("Error running mapping tool: %v\n", err)
+		os.Exit(1)
 	}
 }
 
 func runFormat(cfg *config.Config, inputFilePath string) {
 	mappingFilePath := filepath.Join(cfg.Scan.OutputDirectory, "column_mapping.json")
 
+	logger.Info("Starting format operation", "input_file", inputFilePath)
+
 	err := excel.FormatFile(
 		inputFilePath,
 		cfg.Format.TargetFormatFile,
 		mappingFilePath,
 		cfg.Format.TargetSheet,
-		cfg.Format.FormulaRow,
 		cfg.Format.TableEndTolerance,
 		cfg.Format.CleanFormulaOnlyRows,
 	)
 	if err != nil {
-		log.Fatal("Error formatting file:", err)
+		logger.Error("Format operation failed", "error", err)
+		fmt.Printf("Error formatting file: %v\n", err)
+		os.Exit(1)
 	}
 }
 
 func runAppendTargetHeaders(cfg *config.Config) {
 	targetColumnsFile := filepath.Join(cfg.Scan.OutputDirectory, "target_columns")
 
+	logger.Info("Starting append target headers operation")
 	fmt.Println("\nAppending target format headers to target_columns file...")
 	err := mapping.AppendTargetFormatHeadersToFile(
 		cfg.Format.TargetFormatFile,
@@ -233,6 +243,8 @@ func runAppendTargetHeaders(cfg *config.Config) {
 		targetColumnsFile,
 	)
 	if err != nil {
-		log.Fatal("Error appending target headers:", err)
+		logger.Error("Append target headers operation failed", "error", err)
+		fmt.Printf("Error appending target headers: %v\n", err)
+		os.Exit(1)
 	}
 }

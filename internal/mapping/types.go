@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sheetFmt/internal/excel"
+	"sheetFmt/internal/logger"
 	"strings"
 )
 
@@ -28,7 +29,13 @@ func (mc *MappingConfig) SaveToFile(filepath string) error {
 		return err
 	}
 
-	return writeToFile(filepath, file)
+	err = writeToFile(filepath, file)
+	if err != nil {
+		return err
+	}
+
+	logger.Info("Saved mapping configuration", "path", filepath, "mappings_count", len(mc.Mappings))
+	return nil
 }
 
 // LoadFromFile loads mapping configuration from a JSON file
@@ -44,6 +51,7 @@ func LoadFromFile(filepath string) (*MappingConfig, error) {
 		return nil, err
 	}
 
+	logger.Info("Loaded mapping configuration", "path", filepath, "mappings_count", len(config.Mappings))
 	return &config, nil
 }
 
@@ -69,6 +77,7 @@ func ReadColumnsFromFile(filepath string) ([]string, error) {
 		return nil, fmt.Errorf("error reading file %s: %v", filepath, err)
 	}
 
+	logger.Info("Read columns from file", "path", filepath, "column_count", len(columns))
 	return columns, nil
 }
 
@@ -105,6 +114,7 @@ func CreateDefaultTargetColumnsFile(filepath string) error {
 		}
 	}
 
+	logger.Info("Created default target columns file", "path", filepath)
 	return nil
 }
 
@@ -160,8 +170,10 @@ func AppendTargetFormatHeadersToFile(targetFormatFile, targetSheet, targetColumn
 		return fmt.Errorf("failed to write updated target columns: %v", err)
 	}
 
-	fmt.Printf("✓ Added %d unique headers from target format to target_columns file\n", addedCount)
-	fmt.Printf("✓ Total columns in target_columns: %d\n", len(allColumns))
+	logger.Info("Appended target format headers",
+		"added_count", addedCount,
+		"total_columns", len(allColumns),
+		"target_file", targetColumnsFile)
 
 	return nil
 }

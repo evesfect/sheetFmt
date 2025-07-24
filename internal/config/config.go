@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sheetFmt/internal/logger"
 
 	"github.com/BurntSushi/toml"
 )
@@ -27,7 +28,6 @@ type UIConfig struct {
 type FormatConfig struct {
 	TargetFormatFile     string `toml:"target_format_file"`
 	TargetSheet          string `toml:"target_sheet"`
-	FormulaRow           int    `toml:"formula_row"`
 	TableEndTolerance    int    `toml:"table_end_tolerance"`
 	CleanFormulaOnlyRows bool   `toml:"clean_formula_only_rows"`
 }
@@ -55,7 +55,6 @@ func LoadConfig(configPath string) (*Config, error) {
 			Format: FormatConfig{
 				TargetFormatFile:     "configs/target_format.xlsx",
 				TargetSheet:          "Sheet1",
-				FormulaRow:           100,
 				TableEndTolerance:    1,
 				CleanFormulaOnlyRows: true,
 			},
@@ -66,7 +65,7 @@ func LoadConfig(configPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to create default config: %v", err)
 		}
 
-		fmt.Printf("Created default config file: %s\n", configPath)
+		logger.Info("Created default config file", "path", configPath)
 		return defaultConfig, nil
 	}
 
@@ -90,14 +89,11 @@ func LoadConfig(configPath string) (*Config, error) {
 	if config.Format.TargetSheet == "" {
 		config.Format.TargetSheet = "Sheet1"
 	}
-	if config.Format.FormulaRow == 0 {
-		config.Format.FormulaRow = 100
-	}
 	if config.Format.TableEndTolerance == 0 {
 		config.Format.TableEndTolerance = 1
 	}
-	// Note: CleanFormulaOnlyRows defaults to false if not specified
 
+	logger.Info("Loaded configuration", "path", configPath)
 	return &config, nil
 }
 
@@ -105,7 +101,7 @@ func LoadConfig(configPath string) (*Config, error) {
 func SaveConfig(configPath string, config *Config) error {
 	file, err := os.Create(configPath)
 	if err != nil {
-		return fmt.Errorf("failed to create config file: %v", err)
+		return fmt.Errorf("failed 	to create config file: %v", err)
 	}
 	defer file.Close()
 
@@ -115,5 +111,6 @@ func SaveConfig(configPath string, config *Config) error {
 		return fmt.Errorf("failed to encode config: %v", err)
 	}
 
+	logger.Info("Saved configuration", "path", configPath)
 	return nil
 }
