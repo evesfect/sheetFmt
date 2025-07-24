@@ -137,7 +137,7 @@ func (ai *AIMapper) generateMappingsInChunks(scannedColumns, targetColumns []str
 }
 
 func (ai *AIMapper) generateSingleBatch(scannedColumns, targetColumns []string) ([]AIMapping, error) {
-	logger.Debug("=== GENERATING SINGLE BATCH ===")
+	logger.Info("Generating single batch AI mappings")
 
 	// Build the prompt
 	startTime := time.Now()
@@ -149,9 +149,7 @@ func (ai *AIMapper) generateSingleBatch(scannedColumns, targetColumns []string) 
 		"build_time", promptBuildTime)
 
 	// Log the full prompt for debugging
-	logger.Debug("=== FULL PROMPT SENT TO AI ===")
-	logger.Debug("AI Prompt", "content", prompt)
-	logger.Debug("=== END PROMPT ===")
+	logger.Info("FULL PROMPT SENT TO AI", "content", prompt)
 
 	// Increased timeout since 30s was too short
 	timeout := 60 * time.Second
@@ -171,10 +169,10 @@ func (ai *AIMapper) generateSingleBatch(scannedColumns, targetColumns []string) 
 
 	// Make the API call in a goroutine
 	go func() {
-		logger.Debug("API call goroutine started")
+		logger.Info("API call started")
 		resp, err := ai.model.GenerateContent(ctx, genai.Text(prompt))
 		apiCallTime := time.Since(apiStartTime)
-		logger.Debug("API call completed", "duration", apiCallTime, "has_error", err != nil)
+		logger.Info("API call completed", "duration", apiCallTime, "has_error", err != nil)
 		resultChan <- apiResult{resp: resp, err: err}
 	}()
 
@@ -201,18 +199,13 @@ func (ai *AIMapper) generateSingleBatch(scannedColumns, targetColumns []string) 
 		return nil, fmt.Errorf("API request timed out after %v", timeout)
 	}
 }
-
 func (ai *AIMapper) processAPIResponse(resp *genai.GenerateContentResponse) ([]AIMapping, error) {
-	logger.Debug("=== PROCESSING AI RESPONSE ===")
+	logger.Info("Processing AI response")
 
 	if len(resp.Candidates) == 0 {
 		logger.Error("No response candidates received from Gemini API")
 		return nil, fmt.Errorf("no response generated from AI")
 	}
-
-	logger.Debug("Response structure",
-		"candidates_count", len(resp.Candidates),
-		"parts_count", len(resp.Candidates[0].Content.Parts))
 
 	if len(resp.Candidates[0].Content.Parts) == 0 {
 		logger.Error("No content parts in AI response")
@@ -225,45 +218,23 @@ func (ai *AIMapper) processAPIResponse(resp *genai.GenerateContentResponse) ([]A
 		if textPart, ok := part.(genai.Text); ok {
 			partText := string(textPart)
 			responseText += partText
-			logger.Debug("Response part", "index", i, "length", len(partText))
+			logger.Info("API response part", "part_index", i, "content", partText)
 		} else {
 			logger.Warn("Non-text part in response", "index", i, "type", fmt.Sprintf("%T", part))
 		}
 	}
 
-	logger.Info("AI response extracted", "total_length", len(responseText))
-
-	// Log the full AI response
-	logger.Info("=== FULL AI RESPONSE ===")
-	logger.Info("AI Response", "content", responseText)
-	logger.Info("=== END AI RESPONSE ===")
+	// Log the COMPLETE raw response
+	logger.Info("COMPLETE RAW API RESPONSE", "full_response", responseText)
 
 	// Parse the response
-	parseStartTime := time.Now()
 	mappings, err := ai.parseMappingResponse(responseText)
-	parseTime := time.Since(parseStartTime)
-
 	if err != nil {
-		logger.Error("Failed to parse AI response", "error", err, "parse_time", parseTime)
+		logger.Error("Failed to parse AI response", "error", err)
 		return nil, fmt.Errorf("failed to parse AI response: %v", err)
 	}
 
-	logger.Info("AI response parsed successfully",
-		"mappings_found", len(mappings),
-		"parse_time", parseTime)
-
-	// Log each mapping found
-	logger.Debug("=== PARSED MAPPINGS ===")
-	for i, mapping := range mappings {
-		logger.Debug("AI mapping",
-			"index", i+1,
-			"scanned", mapping.ScannedColumn,
-			"target", mapping.TargetColumn,
-			"confidence", mapping.Confidence)
-	}
-	logger.Debug("=== END PARSED MAPPINGS ===")
-
-	logger.Info("=== AI MAPPING REQUEST END ===")
+	logger.Info("AI response parsed", "total_mappings_found", len(mappings))
 	return mappings, nil
 }
 
@@ -312,30 +283,25 @@ Now provide mappings for the scanned columns:`
 
 // parseMappingResponse parses the AI response into structured mappings
 func (ai *AIMapper) parseMappingResponse(response string) ([]AIMapping, error) {
-	logger.Debug("=== PARSING AI RESPONSE ===")
+	logger.Info("Parsing AI response", "response_length", len(response))
 
 	var mappings []AIMapping
 	lines := strings.Split(strings.TrimSpace(response), "\n")
 
-	logger.Debug("Response parsing", "total_lines", len(lines))
-
-	processedLines := 0
-	skippedLines := 0
-	noMatchCount := 0
-	lowConfidenceCount := 0
+	logger.Info("Processing response lines", "total_lines", len(lines))
 
 	for lineNum, line := range lines {
 		line = strings.TrimSpace(line)
+		logger.Info("Processing line", "line_num", lineNum+1, "content", line)
+
 		if line == "" || strings.HasPrefix(line, "ScannedColumn|") {
-			skippedLines++
-			logger.Debug("Skipping line", "line_num", lineNum+1, "reason", "empty or header", "content", line)
+			logger.Info("Skipping header/empty line", "line_num", lineNum+1)
 			continue
 		}
 
 		parts := strings.Split(line, "|")
 		if len(parts) != 3 {
-			skippedLines++
-			logger.Debug("Skipping line", "line_num", lineNum+1, "reason", "invalid format", "parts", len(parts), "content", line)
+			logger.Info("Skipping invalid format line", "line_num", lineNum+1, "parts_count", len(parts), "content", line)
 			continue
 		}
 
@@ -346,26 +312,24 @@ func (ai *AIMapper) parseMappingResponse(response string) ([]AIMapping, error) {
 		// Parse confidence
 		var confidence float64
 		if _, err := fmt.Sscanf(confidenceStr, "%f", &confidence); err != nil {
-			logger.Debug("Failed to parse confidence", "line_num", lineNum+1, "confidence_str", confidenceStr, "error", err)
+			logger.Info("Failed to parse confidence", "line_num", lineNum+1, "confidence_str", confidenceStr)
 			confidence = 0.0
 		}
 
-		logger.Debug("Parsed line",
+		logger.Info("Parsed mapping",
 			"line_num", lineNum+1,
 			"scanned", scannedCol,
 			"target", targetCol,
 			"confidence", confidence)
 
-		// Skip if NO_MATCH or low confidence
+		// Log what we're filtering out
 		if targetCol == "NO_MATCH" {
-			noMatchCount++
-			logger.Debug("Skipping NO_MATCH", "scanned", scannedCol)
+			logger.Info("Filtering out NO_MATCH", "scanned", scannedCol)
 			continue
 		}
 
-		if confidence < 0.8 {
-			lowConfidenceCount++
-			logger.Debug("Skipping low confidence", "scanned", scannedCol, "confidence", confidence)
+		if confidence < 0.6 {
+			logger.Info("Filtering out low confidence", "scanned", scannedCol, "confidence", confidence)
 			continue
 		}
 
@@ -374,18 +338,10 @@ func (ai *AIMapper) parseMappingResponse(response string) ([]AIMapping, error) {
 			TargetColumn:  targetCol,
 			Confidence:    confidence,
 		})
-		processedLines++
+		logger.Info("Added mapping", "scanned", scannedCol, "target", targetCol, "confidence", confidence)
 	}
 
-	logger.Info("Response parsing completed",
-		"total_lines", len(lines),
-		"processed_lines", processedLines,
-		"skipped_lines", skippedLines,
-		"no_match_count", noMatchCount,
-		"low_confidence_count", lowConfidenceCount,
-		"final_mappings", len(mappings))
-
-	logger.Debug("=== END PARSING AI RESPONSE ===")
+	logger.Info("Parsing completed", "final_mappings", len(mappings))
 	return mappings, nil
 }
 
