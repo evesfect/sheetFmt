@@ -239,14 +239,14 @@ class ExcelFormatter:
                 try:
                     os.remove(output_file)
                     removed_files.append(output_file)
-                    logger.info(f"Removed empty file: {os.path.basename(output_file)}")
+                    logger.warning(f"Removed empty file: {os.path.basename(output_file)}")  # Changed from info to warning
                 except Exception as e:
-                    logger.error(f"Failed to remove empty file {output_file}: {e}")
+                    logger.warning(f"Failed to remove empty file {output_file}: {e}")  # Changed from error to warning
                     # Keep in valid_files if we can't remove it
                     valid_files.append(output_file)
         
         if removed_files:
-            logger.info(f"Removed {len(removed_files)} empty files")
+            logger.warning(f"Removed {len(removed_files)} empty files")  # Changed from info to warning
             safe_print(f"🗑️  Removed {len(removed_files)} empty files:")
             for removed_file in removed_files:
                 safe_print(f"  - {os.path.basename(removed_file)}")
@@ -892,21 +892,28 @@ class ExcelFormatter:
             if not output_files:
                 raise Exception("No sections were processed successfully")
             
-            #Check and remove empty files
+            # NEW: Check and remove empty files
             valid_output_files = self.check_and_remove_empty_files(output_files)
             
             if not valid_output_files:
-                raise Exception("All output files were empty and removed")
-
+                # Changed: Don't treat empty sheets as errors, just warn and return gracefully
+                logger.warning("All output sections were empty due to necessary column filtering - sheet skipped")
+                safe_print(f"⚠️  Sheet skipped: All sections were empty due to necessary column filtering")
+                return  # Return gracefully instead of raising exception
+            
             # Summary
-            if len(output_files) == 1:
-                logger.info(f"Successfully formatted single section to: {output_files[0]}")
-                safe_print(f"Successfully formatted and saved to: {output_files[0]}")
+            if len(valid_output_files) == 1:
+                logger.info(f"Successfully formatted single section to: {valid_output_files[0]}")
+                safe_print(f"Successfully formatted and saved to: {valid_output_files[0]}")
             else:
-                logger.info(f"Successfully formatted {len(output_files)} sections")
-                safe_print(f"Successfully formatted {len(output_files)} sections:")
-                for output_file in output_files:
+                logger.info(f"Successfully formatted {len(valid_output_files)} sections")
+                safe_print(f"Successfully formatted {len(valid_output_files)} sections:")
+                for output_file in valid_output_files:
                     safe_print(f"  - {os.path.basename(output_file)}")
+            
+            # Show summary of necessary column filtering if applicable
+            if hasattr(self, '_necessary_columns') and self._necessary_columns:
+                safe_print(f"📋 Applied necessary column filtering for: {', '.join(self._necessary_columns)}")
             
         except Exception as e:
             logger.error(f"Formatting failed: {e}")
@@ -973,9 +980,14 @@ def format_all_sheets(input_file: str, target_file: str, mapping_file: str, targ
             )
             safe_print(f"✓ Format successful for sheet: {sheet_name}")
         except Exception as e:
-            logger.error(f"Error processing sheet {sheet_name}: {e}")
-            safe_print(f"❌ Error for sheet {sheet_name}: {e}")
-            safe_print(f"Problematic file copied to: data/problematic/{os.path.basename(input_file)}")
+            # Check if this is an "empty sheet" scenario vs a real error
+            if "All output files were empty and removed" in str(e):
+                logger.warning(f"Sheet {sheet_name} skipped: All sections were empty due to necessary column filtering")
+                safe_print(f"Sheet {sheet_name} skipped: No valid data after necessary column filtering")
+            else:
+                logger.error(f"Error processing sheet {sheet_name}: {e}")
+                safe_print(f"❌ Error for sheet {sheet_name}: {e}")
+                safe_print(f"Problematic file copied to: data/problematic/{os.path.basename(input_file)}")
 
 def main():
     """Main entry point for command line usage"""
