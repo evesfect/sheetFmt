@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 
 
+
 def clean_column_name(raw_name: str) -> str:
     """Clean column names by removing HTML tags, extra whitespace, and taking first line"""
     if not raw_name:
@@ -102,6 +103,9 @@ class ExcelFormatter:
         self.scanned_to_target = {}  # Changed: scanned -> target
         self.ignored_scanned = set()  # Changed: track ignored scanned columns
         self.error_messages = []
+        self.sections = []
+        self._necessary_columns = None
+        self._current_applicable_mappings = {}
         
     def load_files(self):
         """Load all required files"""
@@ -155,6 +159,390 @@ class ExcelFormatter:
         except Exception as e:
             logger.error(f"Failed to load files: {e}")
             raise Exception(f"Failed to load files: {e}")
+
+    def load_necessary_columns(self) -> List[str]:
+        """Load necessary column names from the necessary_columns file"""
+        necessary_columns_file = "data/output/necessary_columns"
+        
+        if not os.path.exists(necessary_columns_file):
+            logger.info("No necessary_columns file found, skipping necessary column validation")
+            return []
+        
+        try:
+            with open(necessary_columns_file, 'r', encoding='utf-8') as f:
+                necessary_columns = [line.strip() for line in f if line.strip()]
+            
+            logger.info(f"Loaded {len(necessary_columns)} necessary columns from file")
+            
+            # Validate that necessary columns exist in target columns
+            target_columns = self.load_target_columns_from_file()
+            target_columns_set = {col.lower().strip() for col in target_columns}
+            
+            missing_columns = []
+            for col in necessary_columns:
+                if col.lower().strip() not in target_columns_set:
+                    missing_columns.append(col)
+            
+            if missing_columns:
+                error_msg = f"Necessary columns not found in target_columns: {missing_columns}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+            
+            logger.debug(f"All necessary columns validated against target_columns: {necessary_columns}")
+            return necessary_columns
+            
+        except Exception as e:
+            if "not found in target_columns" in str(e):
+                raise e
+            logger.error(f"Failed to load necessary columns file: {e}")
+            raise Exception(f"Failed to load necessary columns file: {e}")
+
+    def check_row_has_necessary_data(self, input_row_idx: int, input_headers: Dict[str, int], 
+                                applicable_mappings: Dict[str, str], necessary_columns: List[str]) -> bool:
+        """Check if a row has data in all necessary columns"""
+        if not necessary_columns:
+            return True  # No necessary columns defined, all rows are valid
+        
+        for necessary_col in necessary_columns:
+            # Check if this necessary column is mapped and has data
+            if necessary_col in applicable_mappings:
+                input_column = applicable_mappings[necessary_col]
+                if input_column in input_headers:
+                    input_col_idx = input_headers[input_column]
+                    cell = self.input_ws.cell(row=input_row_idx, column=input_col_idx)
+                    
+                    # Check if cell has meaningful data
+                    if cell.value is None or str(cell.value).strip() == "":
+                        logger.debug(f"Row {input_row_idx} missing necessary data in column '{necessary_col}' (mapped from '{input_column}')")
+                        return False
+                else:
+                    logger.debug(f"Row {input_row_idx} missing necessary column '{necessary_col}' - input column '{input_column}' not found")
+                    return False
+            else:
+                logger.debug(f"Row {input_row_idx} missing necessary column '{necessary_col}' - no mapping found")
+                return False
+        
+        return True
+
+    def check_and_remove_empty_files(self, output_files: List[str]) -> List[str]:
+        """Check output files for actual data and remove empty ones"""
+        logger.info("Checking for empty output files")
+        
+        valid_files = []
+        removed_files = []
+        
+        for output_file in output_files:
+            if self.file_has_data(output_file):
+                valid_files.append(output_file)
+                logger.debug(f"File has data, keeping: {os.path.basename(output_file)}")
+            else:
+                try:
+                    os.remove(output_file)
+                    removed_files.append(output_file)
+                    logger.info(f"Removed empty file: {os.path.basename(output_file)}")
+                except Exception as e:
+                    logger.error(f"Failed to remove empty file {output_file}: {e}")
+                    # Keep in valid_files if we can't remove it
+                    valid_files.append(output_file)
+        
+        if removed_files:
+            logger.info(f"Removed {len(removed_files)} empty files")
+            safe_print(f"🗑️  Removed {len(removed_files)} empty files:")
+            for removed_file in removed_files:
+                safe_print(f"  - {os.path.basename(removed_file)}")
+        
+        return valid_files
+
+    def file_has_data(self, file_path: str) -> bool:
+        """Check if an Excel file has actual data rows (beyond header)"""
+        try:
+            # Open the file to check for data
+            check_wb = load_workbook(file_path, read_only=True, data_only=True)
+            check_ws = check_wb.active
+            
+            # Find header row
+            header_row = self.detect_header_row(check_ws)
+            data_start_row = header_row + 1
+            
+            # Check if there are any rows with data after header
+            has_data = False
+            for row_idx in range(data_start_row, check_ws.max_row + 1):
+                for col_idx in range(1, check_ws.max_column + 1):
+                    cell = check_ws.cell(row=row_idx, column=col_idx)
+                    if cell.value is not None and str(cell.value).strip() != "":
+                        has_data = True
+                        break
+                if has_data:
+                    break
+            
+            check_wb.close()
+            
+            logger.debug(f"File {os.path.basename(file_path)} has data: {has_data}")
+            return has_data
+            
+        except Exception as e:
+            logger.error(f"Error checking file for data {file_path}: {e}")
+            return True  # If we can't check, assume it has data to be safe
+
+    def load_target_columns_from_file(self) -> List[str]:
+        """Load target column names from the target_columns file"""
+        # Try to find target_columns file in the expected location
+        target_columns_file = "data/output/target_columns"
+        
+        if not os.path.exists(target_columns_file):
+            logger.warning(f"Target columns file not found at {target_columns_file}, using mapping file columns")
+            # Fallback to target columns from mapping config
+            target_columns = set()
+            for mapping in self.mapping_config.get('mappings', []):
+                if mapping.get('target_column') and not mapping.get('is_ignored', False):
+                    target_columns.add(mapping['target_column'])
+            return list(target_columns)
+        
+        try:
+            with open(target_columns_file, 'r', encoding='utf-8') as f:
+                target_columns = [line.strip() for line in f if line.strip()]
+            
+            logger.debug(f"Loaded {len(target_columns)} target columns from file")
+            return target_columns
+        except Exception as e:
+            logger.error(f"Failed to load target columns file: {e}")
+            return []
+
+    def detect_header_rows_by_target_match(self) -> List[int]:
+        """Detect header rows by checking if any cell matches target column names"""
+        logger.debug("Detecting header rows by matching target columns")
+        
+        target_columns = self.load_target_columns_from_file()
+        if not target_columns:
+            logger.warning("No target columns loaded, using original header detection")
+            return [self.detect_header_row(self.input_ws)]
+        
+        # Create set for faster lookup (case-insensitive)
+        target_columns_set = {col.lower().strip() for col in target_columns}
+        logger.debug(f"Checking against {len(target_columns_set)} target columns")
+        
+        header_rows = []
+        
+        # Check each row in the input worksheet
+        for row_idx in range(1, self.input_ws.max_row + 1):
+            row_has_header = False
+            
+            # Check each cell in the row
+            for col_idx in range(1, self.input_ws.max_column + 1):
+                cell = self.input_ws.cell(row=row_idx, column=col_idx)
+                if cell.value:
+                    cell_value = str(cell.value).strip().lower()
+                    
+                    # Clean the cell value same way we clean column names
+                    cleaned_cell_value = self.clean_column_name_for_matching(str(cell.value))
+                    
+                    if cleaned_cell_value.lower() in target_columns_set:
+                        logger.debug(f"Found target column match at row {row_idx}, col {col_idx}: '{cleaned_cell_value}'")
+                        row_has_header = True
+                        break
+            
+            if row_has_header:
+                header_rows.append(row_idx)
+                logger.debug(f"Marked row {row_idx} as header row")
+        
+        if not header_rows:
+            logger.warning("No header rows found by target matching, falling back to original detection")
+            return [self.detect_header_row(self.input_ws)]
+        
+        logger.info(f"Found {len(header_rows)} header rows by target matching: {header_rows}")
+        return header_rows
+
+    def clean_column_name_for_matching(self, raw_name: str) -> str:
+        """Clean column name for matching (same logic as in scanner.go)"""
+        if not raw_name:
+            return ""
+        
+        # Convert to string and strip basic whitespace
+        cleaned = str(raw_name).strip()
+        
+        # Remove HTML/XML tags using regex
+        import re
+        cleaned = re.sub(r'<[^>]+>', '', cleaned)
+        
+        # Split by newlines and take the first non-empty line
+        lines = [line.strip() for line in cleaned.split('\n') if line.strip()]
+        if lines:
+            cleaned = lines[0]
+        else:
+            cleaned = ""
+        
+        # Remove extra whitespace and normalize
+        cleaned = ' '.join(cleaned.split())
+        
+        return cleaned
+
+    def split_input_sheet_by_headers(self, header_rows: List[int]) -> List[Tuple[int, int, int]]:
+        """Split input sheet into sections based on header rows. Returns list of (header_row, start_row, end_row)"""
+        if len(header_rows) <= 1:
+            # Single section
+            header_row = header_rows[0] if header_rows else 1
+            start_row = header_row + 1
+            end_row = self.input_ws.max_row
+            return [(header_row, start_row, end_row)]
+        
+        sections = []
+        
+        for i, header_row in enumerate(header_rows):
+            start_row = header_row + 1
+            
+            # Determine end row
+            if i < len(header_rows) - 1:
+                end_row = header_rows[i + 1] - 1
+            else:
+                end_row = self.input_ws.max_row
+            
+            # Only add section if it has data rows
+            if start_row <= end_row:
+                sections.append((header_row, start_row, end_row))
+                logger.debug(f"Section {i+1}: header row {header_row}, data rows {start_row}-{end_row}")
+        
+        logger.info(f"Split input sheet into {len(sections)} sections")
+        return sections
+
+    def process_sheet_section(self, section_num: int, header_row: int, start_row: int, end_row: int) -> str:
+        """Process a single section of the input sheet and return the output filename"""
+        logger.info(f"Processing section {section_num}: header row {header_row}, data rows {start_row}-{end_row}")
+        
+        # Create output filename for this section
+        base_name = os.path.splitext(os.path.basename(self.output_file))[0]
+        if len(self.sections) > 1:  # Only add part number if multiple sections
+            section_output = f"{base_name}_part{section_num}.xlsx"
+        else:
+            section_output = f"{base_name}.xlsx"
+        
+        section_output_path = os.path.join(os.path.dirname(self.output_file), section_output)
+        
+        # Create a new target workbook for this section
+        section_target_wb = load_workbook(self.target_file, data_only=False)
+        section_target_ws = section_target_wb[self.target_sheet_name]
+        
+        # Store original values
+        original_input_header_row = getattr(self, 'input_header_row', 1)
+        original_target_wb = self.target_wb
+        original_target_ws = self.target_ws
+        original_output_file = self.output_file
+        
+        # Temporarily update for this section
+        self.input_header_row = header_row
+        self.target_wb = section_target_wb
+        self.target_ws = section_target_ws
+        self.output_file = section_output_path
+        
+        try:
+            # Get headers for this section
+            section_input_headers = self.get_section_input_headers(header_row)
+            target_headers = self.get_target_headers()
+            
+            # Find applicable mappings for this section
+            applicable_mappings = self.find_applicable_mappings(section_input_headers, target_headers)
+            # Store applicable mappings for necessary column validation
+            self._current_applicable_mappings = applicable_mappings
+            
+            # Calculate section data range
+            section_data_rows = end_row - start_row + 1
+            target_max_needed_row = self.target_header_row + section_data_rows
+            max_target_row = max(self.target_ws.max_row, target_max_needed_row)
+            
+            # Clear target data
+            for header_name, col_idx in target_headers:
+                if header_name:
+                    self.clear_column_data(col_idx, max_target_row)
+            
+            # Process each target column
+            for header_name, col_idx in target_headers:
+                if not header_name:
+                    continue
+                    
+                if header_name in applicable_mappings:
+                    input_column = applicable_mappings[header_name]
+                    self.process_section_column_mapping(
+                        col_idx, header_name, input_column, section_input_headers, 
+                        start_row, end_row
+                    )
+            
+            # Clean formula-only rows
+            self.clean_formula_only_rows_func()
+            
+            # Save this section
+            section_target_wb.save(section_output_path)
+            logger.info(f"Section {section_num} saved to: {section_output_path}")
+            
+            return section_output_path
+            
+        finally:
+            # Restore original values
+            self.input_header_row = original_input_header_row
+            self.target_wb = original_target_wb
+            self.target_ws = original_target_ws
+            self.output_file = original_output_file
+            section_target_wb.close()
+
+    def get_section_input_headers(self, header_row: int) -> Dict[str, int]:
+        """Get input headers for a specific section"""
+        headers = {}
+        
+        logger.debug(f"Getting section headers from row {header_row}")
+        
+        for col_idx in range(1, self.input_ws.max_column + 1):
+            cell = self.input_ws.cell(row=header_row, column=col_idx)
+            if cell.value:
+                raw_header = str(cell.value).strip()
+                clean_header = self.clean_column_name_for_matching(raw_header)
+                
+                if clean_header:
+                    headers[clean_header] = col_idx
+                    logger.debug(f"Section header - Column {col_idx}: '{clean_header}'")
+        
+        return headers
+
+    def process_section_column_mapping(self, target_col_idx: int, target_header: str, 
+                                 input_column: str, input_headers: Dict[str, int],
+                                 data_start_row: int, data_end_row: int):
+        """Process column mapping for a specific section with necessary column validation"""
+        logger.debug(f"Processing section column '{target_header}' mapped from '{input_column}'")
+        
+        input_col_idx = input_headers[input_column]
+        target_data_start_row = self.target_header_row + 1
+        
+        # Load necessary columns once for this section
+        necessary_columns = getattr(self, '_necessary_columns', None)
+        if necessary_columns is None:
+            self._necessary_columns = self.load_necessary_columns()
+            necessary_columns = self._necessary_columns
+        
+        # Get applicable mappings for necessary column validation
+        applicable_mappings = getattr(self, '_current_applicable_mappings', {})
+        
+        target_row = target_data_start_row
+        skipped_rows = 0
+        processed_rows = 0
+        
+        for input_row_idx in range(data_start_row, data_end_row + 1):
+            # Check if this row has all necessary data
+            if not self.check_row_has_necessary_data(input_row_idx, input_headers, applicable_mappings, necessary_columns):
+                skipped_rows += 1
+                continue
+            
+            input_cell = self.input_ws.cell(row=input_row_idx, column=input_col_idx)
+            target_cell = self.target_ws.cell(row=target_row, column=target_col_idx)
+            
+            # Skip formulas
+            if isinstance(input_cell.value, str) and input_cell.value.startswith('='):
+                continue
+                
+            self.copy_cell_value_with_type_preservation(input_cell, target_cell)
+            target_row += 1
+            processed_rows += 1
+        
+        if skipped_rows > 0:
+            logger.info(f"Column '{target_header}': processed {processed_rows} rows, skipped {skipped_rows} rows due to missing necessary data")
+        else:
+            logger.debug(f"Column '{target_header}': processed {processed_rows} rows")
 
     def detect_table_end_row(self, worksheet, header_row: int) -> int:
         """Detect where the data table ends by checking rightmost column continuity with tolerance"""
@@ -470,95 +858,55 @@ class ExcelFormatter:
         return 1  # Default to row 1 if not found
 
     def format_excel(self):
-        """Main formatting function"""
+        """Main formatting function with section splitting support"""
         try:
             logger.info(f"Starting Excel formatting for {os.path.basename(self.input_file)}")
             self.load_files()
             
             # Initialize header row variables
-            self.input_header_row = 1
-            self.target_header_row = 1
+            self.target_header_row = self.detect_header_row(self.target_ws)
+            logger.debug(f"Target header row: {self.target_header_row}")
             
-            input_headers = self.get_input_headers()
-            target_headers = self.get_target_headers()
+            # NEW: Detect header rows in input by matching target columns
+            input_header_rows = self.detect_header_rows_by_target_match()
             
-            logger.debug(f"Found {len(input_headers)} input headers and {len(target_headers)} target headers")
-            logger.debug(f"Total configured mappings: {len(self.scanned_to_target)}")
+            # Split input sheet into sections
+            self.sections = self.split_input_sheet_by_headers(input_header_rows)
             
-            # NEW: Find applicable mappings based on available input columns
-            applicable_mappings = self.find_applicable_mappings(input_headers, target_headers)
-            logger.debug(f"Applicable mappings for this file: {len(applicable_mappings)}")
+            if len(self.sections) == 0:
+                raise Exception("No valid sections found in input file")
             
-            # Calculate maximum data row from input file
-            max_input_data_row = self.input_ws.max_row
+            logger.info(f"Found {len(self.sections)} sections to process")
             
-            # Calculate how many data rows we need in target
-            input_data_rows = max_input_data_row - self.input_header_row
-            target_max_needed_row = self.target_header_row + input_data_rows
+            # Process each section
+            output_files = []
+            for i, (header_row, start_row, end_row) in enumerate(self.sections, 1):
+                try:
+                    section_output = self.process_sheet_section(i, header_row, start_row, end_row)
+                    output_files.append(section_output)
+                    safe_print(f"✓ Section {i} processed: {os.path.basename(section_output)}")
+                except Exception as e:
+                    logger.error(f"Failed to process section {i}: {e}")
+                    safe_print(f"❌ Error processing section {i}: {e}")
             
-            # Extend target worksheet if needed
-            max_target_row = max(self.target_ws.max_row, target_max_needed_row)
+            if not output_files:
+                raise Exception("No sections were processed successfully")
             
-            logger.debug(f"Input header row: {self.input_header_row}, Target header row: {self.target_header_row}")
-            logger.debug(f"Max input data row: {max_input_data_row}, Max target row needed: {target_max_needed_row}")
+            #Check and remove empty files
+            valid_output_files = self.check_and_remove_empty_files(output_files)
             
-            # First, clear all data in target (prepare for fresh data import)
-            for header_name, col_idx in target_headers:
-                if not header_name:  # Skip empty headers
-                    continue
-                self.clear_column_data(col_idx, max_target_row)
-            
-            # Process each target column using applicable mappings
-            processed_columns = 0
-            mapped_columns = 0
-            skipped_columns = 0
+            if not valid_output_files:
+                raise Exception("All output files were empty and removed")
 
-            for header_name, col_idx in target_headers:
-                if not header_name:  # Skip empty headers
-                    continue
-                    
-                col_letter = get_column_letter(col_idx)
-                processed_columns += 1
-                
-                logger.debug(f"Processing target column '{header_name}' (Column {col_letter})")
-                
-                if header_name in applicable_mappings:
-                    # Column has applicable mapping
-                    mapped_columns += 1
-                    input_column = applicable_mappings[header_name]
-                    logger.debug(f"Applying data mapping for {col_letter}: '{header_name}' <- '{input_column}'")
-                    self.process_column_with_mapping(
-                        col_idx, header_name, input_column, input_headers
-                    )
-                else:
-                    # No applicable mapping found
-                    logger.debug(f"No applicable mapping found for '{header_name}' - leaving empty")
-                    skipped_columns += 1
-
-            logger.debug(f"Data mapping complete - Processed: {processed_columns}, Mapped: {mapped_columns}, Skipped: {skipped_columns}")
-            
-            # Clean formula-only and empty rows
-            self.clean_formula_only_rows_func()
-            
-            logger.debug(f"Summary - Processed: {processed_columns}, Mapped: {mapped_columns}, Errors: {len(self.error_messages)}")
-            
-            # Handle errors
-            if self.error_messages:
-                for msg in self.error_messages:
-                    logger.error(msg)
-                
-                # Copy to problematic directory
-                problematic_dir = Path("data/problematic")
-                problematic_dir.mkdir(parents=True, exist_ok=True)
-                problematic_path = problematic_dir / os.path.basename(self.input_file)
-                shutil.copy2(self.input_file, problematic_path)
-                
-                raise Exception("Formatting failed due to errors")
-            
-            # Save the result
-            self.target_wb.save(self.output_file)
-            logger.info(f"Successfully formatted and saved to: {self.output_file}")
-            safe_print(f"Successfully formatted and saved to: {self.output_file}")
+            # Summary
+            if len(output_files) == 1:
+                logger.info(f"Successfully formatted single section to: {output_files[0]}")
+                safe_print(f"Successfully formatted and saved to: {output_files[0]}")
+            else:
+                logger.info(f"Successfully formatted {len(output_files)} sections")
+                safe_print(f"Successfully formatted {len(output_files)} sections:")
+                for output_file in output_files:
+                    safe_print(f"  - {os.path.basename(output_file)}")
             
         except Exception as e:
             logger.error(f"Formatting failed: {e}")
@@ -574,7 +922,7 @@ class ExcelFormatter:
             # Clean up
             if self.input_wb:
                 self.input_wb.close()
-            if self.target_wb:
+            if hasattr(self, 'target_wb') and self.target_wb:
                 self.target_wb.close()
 
 
