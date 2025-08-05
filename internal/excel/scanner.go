@@ -251,6 +251,19 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 			"file", fileName,
 			"sheet_progress", fmt.Sprintf("%d/%d", sheetIndex+1, len(sheetNames)))
 
+		// Detect header row for this sheet
+		headerRow, err := editor.DetectHeaderRow(sheetName)
+		if err != nil {
+			logger.Error("Failed to detect header row in sheet",
+				"sheet", sheetName,
+				"file", fileName,
+				"error", err)
+			stats.SheetsWithErrors++
+			continue
+		}
+
+		logger.Debug("Header row detected", "sheet", sheetName, "file", fileName, "header_row", headerRow)
+
 		// Get column headers from this sheet
 		headers, err := editor.GetColumnHeaders(sheetName)
 		if err != nil {
@@ -265,10 +278,11 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 		logger.Debug("Retrieved headers from sheet",
 			"sheet", sheetName,
 			"file", fileName,
-			"raw_header_count", len(headers))
+			"raw_header_count", len(headers),
+			"header_row", headerRow)
 
 		if len(headers) == 0 {
-			logger.Warn("No headers found in sheet", "sheet", sheetName, "file", fileName)
+			logger.Warn("No headers found in sheet", "sheet", sheetName, "file", fileName, "header_row", headerRow)
 			stats.SheetsProcessed++
 			continue
 		}
@@ -280,6 +294,7 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 
 		// Add each header to the unique set after cleaning
 		for headerIndex, header := range headers {
+			columnPosition := headerIndex + 1 // Convert to 1-based column position
 			rawHeader := strings.TrimSpace(header)
 
 			if rawHeader == "" {
@@ -287,16 +302,35 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 				logger.Debug("Found empty header",
 					"sheet", sheetName,
 					"file", fileName,
-					"header_index", headerIndex)
+					"column", columnPosition,
+					"row", headerRow)
 				continue
 			}
 
 			// Clean the header name
 			cleanHeader := cleanColumnName(rawHeader)
 			if cleanHeader != "" {
-				// Track first occurrence of this header
+				// Track first occurrence of this header with detailed location
 				if !uniqueColumns[cleanHeader] {
 					headerSources[cleanHeader] = fileName
+					// Log detailed location information for unique headers
+					logger.Info("NEW UNIQUE HEADER FOUND",
+						"header", cleanHeader,
+						"file", fileName,
+						"sheet", sheetName,
+						"column", columnPosition,
+						"row", headerRow,
+						"original", rawHeader)
+				} else {
+					// Log additional occurrence of existing unique header
+					logger.Debug("Existing unique header found again",
+						"header", cleanHeader,
+						"file", fileName,
+						"sheet", sheetName,
+						"column", columnPosition,
+						"row", headerRow,
+						"original", rawHeader,
+						"first_found_in", headerSources[cleanHeader])
 				}
 
 				uniqueColumns[cleanHeader] = true
@@ -312,14 +346,24 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 					logger.Debug("Header cleaned",
 						"sheet", sheetName,
 						"file", fileName,
+						"column", columnPosition,
+						"row", headerRow,
 						"original", rawHeader,
 						"cleaned", cleanHeader)
+				} else {
+					logger.Debug("Header used as-is",
+						"sheet", sheetName,
+						"file", fileName,
+						"column", columnPosition,
+						"row", headerRow,
+						"header", cleanHeader)
 				}
 			} else {
 				logger.Debug("Header became empty after cleaning",
 					"sheet", sheetName,
 					"file", fileName,
-					"header_index", headerIndex,
+					"column", columnPosition,
+					"row", headerRow,
 					"original", rawHeader)
 				sheetEmptyHeaders++
 			}
@@ -329,6 +373,7 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 		logger.Info("Sheet processed",
 			"sheet", sheetName,
 			"file", fileName,
+			"header_row", headerRow,
 			"headers_found", sheetHeadersFound,
 			"empty_headers", sheetEmptyHeaders,
 			"cleaned_headers", sheetCleanedHeaders,
@@ -344,6 +389,7 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 			logger.Warn("Sheet had headers but none were valid after processing",
 				"sheet", sheetName,
 				"file", fileName,
+				"header_row", headerRow,
 				"raw_headers_count", len(headers))
 		}
 	}
