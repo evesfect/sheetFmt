@@ -65,6 +65,9 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 		return fmt.Errorf("failed to create output directory: %v", err)
 	}
 
+	// Load blacklisted keywords
+	blacklistedKeywords := loadBlacklistedKeywords()
+
 	// Get all .xlsx files in the directory
 	xlsxFiles, err := getXlsxFiles(inputDir)
 	if err != nil {
@@ -90,13 +93,14 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 
 	// Track scanning statistics
 	var (
-		totalFilesProcessed   = 0
-		totalFilesWithErrors  = 0
-		totalSheetsProcessed  = 0
-		totalSheetsWithErrors = 0
-		totalHeadersFound     = 0
-		totalHeadersCleaned   = 0
-		totalEmptyHeaders     = 0
+		totalFilesProcessed    = 0
+		totalFilesWithErrors   = 0
+		totalSheetsProcessed   = 0
+		totalSheetsWithErrors  = 0
+		totalSheetsBlacklisted = 0
+		totalHeadersFound      = 0
+		totalHeadersCleaned    = 0
+		totalEmptyHeaders      = 0
 	)
 
 	// Process each Excel file
@@ -108,7 +112,7 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 			"path", filePath)
 		fmt.Printf("[%d/%d] Scanning: %s\n", i+1, len(xlsxFiles), fileName)
 
-		fileStats, err := scanFileColumns(filePath, uniqueColumns, cleaningStats, headerSources)
+		fileStats, err := scanFileColumns(filePath, uniqueColumns, cleaningStats, headerSources, blacklistedKeywords)
 		if err != nil {
 			logger.Error("Failed to scan file completely",
 				"file", fileName,
@@ -121,16 +125,18 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 				"file", fileName,
 				"sheets_processed", fileStats.SheetsProcessed,
 				"sheets_with_errors", fileStats.SheetsWithErrors,
+				"sheets_blacklisted", fileStats.SheetsBlacklisted,
 				"headers_found", fileStats.HeadersFound,
 				"empty_headers", fileStats.EmptyHeaders)
-			fmt.Printf("Successfully scanned: %s (%d sheets, %d headers)\n",
-				fileName, fileStats.SheetsProcessed, fileStats.HeadersFound)
+			fmt.Printf("Successfully scanned: %s (%d sheets, %d headers, %d blacklisted)\n",
+				fileName, fileStats.SheetsProcessed, fileStats.HeadersFound, fileStats.SheetsBlacklisted)
 		}
 
 		// Update totals
 		totalFilesProcessed++
 		totalSheetsProcessed += fileStats.SheetsProcessed
 		totalSheetsWithErrors += fileStats.SheetsWithErrors
+		totalSheetsBlacklisted += fileStats.SheetsBlacklisted
 		totalHeadersFound += fileStats.HeadersFound
 		totalEmptyHeaders += fileStats.EmptyHeaders
 	}
@@ -170,6 +176,7 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 		"total_files_with_errors", totalFilesWithErrors,
 		"total_sheets_processed", totalSheetsProcessed,
 		"total_sheets_with_errors", totalSheetsWithErrors,
+		"total_sheets_blacklisted", totalSheetsBlacklisted,
 		"total_headers_found", totalHeadersFound,
 		"total_headers_cleaned", totalHeadersCleaned,
 		"total_empty_headers", totalEmptyHeaders,
@@ -193,6 +200,9 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 	fmt.Printf("\nScan Summary:\n")
 	fmt.Printf("   Files processed: %d/%d\n", totalFilesProcessed-totalFilesWithErrors, len(xlsxFiles))
 	fmt.Printf("   Sheets processed: %d\n", totalSheetsProcessed)
+	if totalSheetsBlacklisted > 0 {
+		fmt.Printf("   Sheets blacklisted: %d\n", totalSheetsBlacklisted)
+	}
 	fmt.Printf("   Headers found: %d\n", totalHeadersFound)
 	fmt.Printf("   Unique columns: %d\n", len(columnNames))
 	if totalHeadersCleaned > 0 {
@@ -211,16 +221,20 @@ func ScanAllColumnsInDirectory(inputDir, outputDir string) error {
 
 // FileStats holds statistics about scanning a single file
 type FileStats struct {
-	SheetsProcessed  int
-	SheetsWithErrors int
-	HeadersFound     int
-	EmptyHeaders     int
+	SheetsProcessed   int
+	SheetsWithErrors  int
+	SheetsBlacklisted int
+	HeadersFound      int
+	EmptyHeaders      int
 }
 
 // scanFileColumns scans all sheets in a single Excel file and adds column names to the set
-func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningStats map[string]string, headerSources map[string]string) (FileStats, error) {
+func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningStats map[string]string, headerSources map[string]string, blacklistedKeywords []string) (FileStats, error) {
 	stats := FileStats{}
 	fileName := filepath.Base(filePath)
+
+	// Track unique columns at file level
+	initialUniqueCount := len(uniqueColumns)
 
 	// Open the Excel file
 	logger.Debug("Opening Excel file", "file", fileName, "path", filePath)
@@ -246,10 +260,20 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 
 	// Process each sheet
 	for sheetIndex, sheetName := range sheetNames {
+		// Check if sheet is blacklisted
+		if isSheetBlacklisted(sheetName, blacklistedKeywords) {
+			logger.Info("Skipping blacklisted sheet", "sheet", sheetName, "file", fileName)
+			stats.SheetsBlacklisted++
+			continue
+		}
+
 		logger.Debug("Processing sheet",
 			"sheet", sheetName,
 			"file", fileName,
 			"sheet_progress", fmt.Sprintf("%d/%d", sheetIndex+1, len(sheetNames)))
+
+		// Track unique columns before processing this sheet
+		uniqueCountBeforeSheet := len(uniqueColumns)
 
 		// Detect header row for this sheet
 		headerRow, err := editor.DetectHeaderRow(sheetName)
@@ -369,6 +393,10 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 			}
 		}
 
+		// Calculate unique columns added by this sheet
+		uniqueCountAfterSheet := len(uniqueColumns)
+		newUniqueColumnsInSheet := uniqueCountAfterSheet - uniqueCountBeforeSheet
+
 		// Log sheet processing results
 		logger.Info("Sheet processed",
 			"sheet", sheetName,
@@ -377,7 +405,9 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 			"headers_found", sheetHeadersFound,
 			"empty_headers", sheetEmptyHeaders,
 			"cleaned_headers", sheetCleanedHeaders,
-			"total_raw_headers", len(headers))
+			"total_raw_headers", len(headers),
+			"new_unique_columns_in_sheet", newUniqueColumnsInSheet,
+			"total_unique_columns_after_sheet", uniqueCountAfterSheet)
 
 		// Update file statistics
 		stats.SheetsProcessed++
@@ -394,12 +424,19 @@ func scanFileColumns(filePath string, uniqueColumns map[string]bool, cleaningSta
 		}
 	}
 
+	// Calculate unique columns added by this entire file
+	finalUniqueCount := len(uniqueColumns)
+	newUniqueColumnsInFile := finalUniqueCount - initialUniqueCount
+
 	logger.Debug("File processing completed",
 		"file", fileName,
 		"sheets_processed", stats.SheetsProcessed,
 		"sheets_with_errors", stats.SheetsWithErrors,
+		"sheets_blacklisted", stats.SheetsBlacklisted,
 		"total_headers_found", stats.HeadersFound,
-		"total_empty_headers", stats.EmptyHeaders)
+		"total_empty_headers", stats.EmptyHeaders,
+		"new_unique_columns_in_file", newUniqueColumnsInFile,
+		"total_unique_columns_after_file", finalUniqueCount)
 
 	return stats, nil
 }
@@ -483,4 +520,75 @@ func writeColumnsToFile(filename string, columns []string) error {
 
 	logger.Info("Successfully wrote columns to file", "filename", filename, "column_count", len(columns))
 	return nil
+}
+
+// loadBlacklistedKeywords loads blacklisted keywords from file
+func loadBlacklistedKeywords() []string {
+	blacklistedFile := "data/output/blacklisted_keywords"
+
+	logger.Info("Loading blacklisted keywords", "file_path", blacklistedFile)
+
+	if _, err := os.Stat(blacklistedFile); os.IsNotExist(err) {
+		logger.Info("No blacklisted_keywords file found, no sheets will be blacklisted")
+		return nil
+	}
+
+	file, err := os.Open(blacklistedFile)
+	if err != nil {
+		logger.Error("Failed to open blacklisted keywords file", "error", err)
+		return nil
+	}
+	defer file.Close()
+
+	var keywords []string
+	scanner := bufio.NewScanner(file)
+
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+		logger.Debug("Reading blacklist line", "line_num", lineNum, "content", line)
+		if line != "" {
+			keywords = append(keywords, line)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Error("Error reading blacklisted keywords file", "error", err)
+		return nil
+	}
+
+	// Always log the result, even if empty
+	if len(keywords) > 0 {
+		logger.Info("Successfully loaded blacklisted keywords", "count", len(keywords), "keywords", keywords)
+		fmt.Printf("Loaded %d blacklisted keywords: %v\n", len(keywords), keywords)
+	} else {
+		logger.Info("Blacklisted keywords file found but no keywords loaded (empty file or only whitespace)")
+		fmt.Printf("sBlacklisted keywords file found but is empty\n")
+	}
+
+	return keywords
+}
+
+// isSheetBlacklisted checks if a sheet name contains any blacklisted keywords
+func isSheetBlacklisted(sheetName string, blacklistedKeywords []string) bool {
+	logger.Debug("Checking if sheet is blacklisted", "sheet", sheetName, "keywords_count", len(blacklistedKeywords))
+
+	if len(blacklistedKeywords) == 0 {
+		return false
+	}
+
+	sheetNameLower := strings.ToLower(sheetName)
+
+	for _, keyword := range blacklistedKeywords {
+		keywordLower := strings.ToLower(keyword)
+		if strings.Contains(sheetNameLower, keywordLower) {
+			logger.Info("Sheet blacklisted", "sheet", sheetName, "keyword", keyword)
+			fmt.Printf("Skipping blacklisted sheet: %s (contains '%s')\n", sheetName, keyword)
+			return true
+		}
+	}
+
+	logger.Debug("Sheet not blacklisted", "sheet", sheetName)
+	return false
 }

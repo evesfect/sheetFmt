@@ -144,8 +144,8 @@ class ExcelFormatter:
             logger.debug(f"Total ignored: {ignored_count}")
             
             # Load Excel files
-            # CHANGED: Load input file with data_only=True to get calculated values, not formulas
-            self.input_wb = load_workbook(self.input_file, data_only=True)
+            # CHANGED: no data_only=True for performance issues
+            self.input_wb = load_workbook(self.input_file, read_only=True)
             # Keep target file with data_only=False to preserve its structure
             self.target_wb = load_workbook(self.target_file, data_only=False)
             
@@ -223,6 +223,40 @@ class ExcelFormatter:
                 return False
         
         return True
+
+    def load_blacklisted_keywords(self) -> List[str]:
+        """Load blacklisted keywords from the blacklisted_keywords file"""
+        blacklisted_keywords_file = "data/output/blacklisted_keywords"
+        
+        if not os.path.exists(blacklisted_keywords_file):
+            logger.info("No blacklisted_keywords file found, no sheets will be blacklisted")
+            return []
+        
+        try:
+            with open(blacklisted_keywords_file, 'r', encoding='utf-8') as f:
+                keywords = [line.strip() for line in f if line.strip()]
+            
+            logger.info(f"Loaded {len(keywords)} blacklisted keywords: {keywords}")
+            return keywords
+            
+        except Exception as e:
+            logger.error(f"Failed to load blacklisted keywords file: {e}")
+            return []
+
+    def is_sheet_blacklisted(self, sheet_name: str, blacklisted_keywords: List[str]) -> bool:
+        """Check if a sheet name contains any blacklisted keywords (case-insensitive)"""
+        if not blacklisted_keywords:
+            return False
+        
+        sheet_name_lower = sheet_name.lower()
+        
+        for keyword in blacklisted_keywords:
+            if keyword.lower() in sheet_name_lower:
+                logger.info(f"Sheet '{sheet_name}' blacklisted due to keyword '{keyword}'")
+                return True
+        
+        return False
+
 
     def check_and_remove_empty_files(self, output_files: List[str]) -> List[str]:
         """Check output files for actual data and remove empty ones"""
@@ -954,6 +988,11 @@ def format_all_sheets(input_file: str, target_file: str, mapping_file: str, targ
     results_dir = Path("data/results")
     results_dir.mkdir(parents=True, exist_ok=True)
     
+    # Load blacklisted keywords
+    formatter = ExcelFormatter(input_file, target_file, mapping_file, 
+                              "", "", target_sheet, table_end_tolerance, clean_formula_only_rows)
+    blacklisted_keywords = formatter.load_blacklisted_keywords()
+    
     # Get all sheet names from input file
     input_wb = load_workbook(input_file, read_only=True)
     input_sheets = input_wb.sheetnames
@@ -964,10 +1003,34 @@ def format_all_sheets(input_file: str, target_file: str, mapping_file: str, targ
     
     logger.info(f"Processing {len(input_sheets)} sheets from {os.path.basename(input_file)}")
     
-    # Process each sheet
-    input_filename = Path(input_file).stem
+    # Filter out blacklisted sheets
+    valid_sheets = []
+    blacklisted_sheets = []
     
     for sheet_name in input_sheets:
+        if formatter.is_sheet_blacklisted(sheet_name, blacklisted_keywords):
+            blacklisted_sheets.append(sheet_name)
+        else:
+            valid_sheets.append(sheet_name)
+    
+    if blacklisted_sheets:
+        logger.info(f"Skipping {len(blacklisted_sheets)} blacklisted sheets: {blacklisted_sheets}")
+        safe_print(f"⚫ Skipping {len(blacklisted_sheets)} blacklisted sheets:")
+        for sheet in blacklisted_sheets:
+            safe_print(f"  - {sheet}")
+    
+    if not valid_sheets:
+        logger.warning("All sheets are blacklisted, nothing to process")
+        safe_print("⚠️  All sheets are blacklisted, nothing to process")
+        return
+    
+    logger.info(f"Processing {len(valid_sheets)} valid sheets")
+    safe_print(f"📋 Processing {len(valid_sheets)} valid sheets")
+    
+    # Process each valid sheet
+    input_filename = Path(input_file).stem
+    
+    for sheet_name in valid_sheets:
         output_filename = f"{input_filename}-{sheet_name}.xlsx"
         output_file = results_dir / output_filename
         
@@ -983,7 +1046,7 @@ def format_all_sheets(input_file: str, target_file: str, mapping_file: str, targ
             # Check if this is an "empty sheet" scenario vs a real error
             if "All output files were empty and removed" in str(e):
                 logger.warning(f"Sheet {sheet_name} skipped: All sections were empty due to necessary column filtering")
-                safe_print(f"Sheet {sheet_name} skipped: No valid data after necessary column filtering")
+                safe_print(f"⚠️  Sheet {sheet_name} skipped: No valid data after necessary column filtering")
             else:
                 logger.error(f"Error processing sheet {sheet_name}: {e}")
                 safe_print(f"❌ Error for sheet {sheet_name}: {e}")
