@@ -82,6 +82,11 @@ def safe_print(text):
 
 
 class ExcelFormatter:
+    # Performance optimization constants - adjust these if needed
+    MAX_HEADER_SEARCH_ROW = 300  # Only search for headers in first 300 rows
+    MAX_HEADER_SEARCH_COL = 15   # Only search for headers in first 15 columns
+    DEBUG_LOG_INTERVAL = 50      # Log every 50th row for missing necessary data
+    
     def __init__(self, input_file: str, target_file: str, mapping_file: str, 
                  output_file: str, input_sheet: str, target_sheet: str, 
                  table_end_tolerance: int = 1, clean_formula_only_rows: bool = True):
@@ -203,6 +208,8 @@ class ExcelFormatter:
         if not necessary_columns:
             return True  # No necessary columns defined, all rows are valid
         
+        missing_columns = []
+        
         for necessary_col in necessary_columns:
             # Check if this necessary column is mapped and has data
             if necessary_col in applicable_mappings:
@@ -213,14 +220,17 @@ class ExcelFormatter:
                     
                     # Check if cell has meaningful data
                     if cell.value is None or str(cell.value).strip() == "":
-                        logger.debug(f"Row {input_row_idx} missing necessary data in column '{necessary_col}' (mapped from '{input_column}')")
-                        return False
+                        missing_columns.append(f"'{necessary_col}' (mapped from '{input_column}')")
                 else:
-                    logger.debug(f"Row {input_row_idx} missing necessary column '{necessary_col}' - input column '{input_column}' not found")
-                    return False
+                    missing_columns.append(f"'{necessary_col}' - input column '{input_column}' not found")
             else:
-                logger.debug(f"Row {input_row_idx} missing necessary column '{necessary_col}' - no mapping found")
-                return False
+                missing_columns.append(f"'{necessary_col}' - no mapping found")
+        
+        # OPTIMIZATION: Only log every Nth row to reduce log spam, and batch missing columns
+        if missing_columns:
+            if input_row_idx % self.DEBUG_LOG_INTERVAL == 1:  # Log first row and every Nth row
+                logger.debug(f"Row {input_row_idx} missing necessary data in columns: {', '.join(missing_columns)}")
+            return False
         
         return True
 
@@ -309,7 +319,7 @@ class ExcelFormatter:
             return []
 
     def detect_header_rows_by_target_match(self) -> List[int]:
-        """Detect header rows by checking if any cell matches target column names"""
+        """Detect header rows by checking if any cell matches target column names - OPTIMIZED"""
         logger.debug("Detecting header rows by matching target columns")
         
         target_columns = self.load_target_columns_from_file()
@@ -321,14 +331,23 @@ class ExcelFormatter:
         target_columns_set = {col.lower().strip() for col in target_columns}
         logger.debug(f"Checking against {len(target_columns_set)} target columns")
         
-        header_rows = []
+        # OPTIMIZATION: Limit search ranges using class constants
+        max_search_row = min(self.input_ws.max_row, self.MAX_HEADER_SEARCH_ROW)
+        max_search_col = min(self.input_ws.max_column, self.MAX_HEADER_SEARCH_COL)
         
-        # Check each row in the input worksheet
-        for row_idx in range(1, self.input_ws.max_row + 1):
+        logger.debug(f"Optimized search range: rows 1-{max_search_row} (instead of 1-{self.input_ws.max_row}), "
+                    f"columns 1-{max_search_col} (instead of 1-{self.input_ws.max_column})")
+        
+        header_rows = []
+        cells_checked = 0  # Track performance improvement
+        
+        # Check each row in the LIMITED range
+        for row_idx in range(1, max_search_row + 1):
             row_has_header = False
             
-            # Check each cell in the row
-            for col_idx in range(1, self.input_ws.max_column + 1):
+            # Check each cell in the LIMITED column range
+            for col_idx in range(1, max_search_col + 1):
+                cells_checked += 1
                 cell = self.input_ws.cell(row=row_idx, column=col_idx)
                 if cell.value:
                     cell_value = str(cell.value).strip().lower()
@@ -339,11 +358,15 @@ class ExcelFormatter:
                     if cleaned_cell_value.lower() in target_columns_set:
                         logger.debug(f"Found target column match at row {row_idx}, col {col_idx}: '{cleaned_cell_value}'")
                         row_has_header = True
-                        break
+                        break  # Found a match in this row, move to next row
             
             if row_has_header:
                 header_rows.append(row_idx)
                 logger.debug(f"Marked row {row_idx} as header row")
+        
+        original_cells = self.input_ws.max_row * self.input_ws.max_column
+        logger.debug(f"Performance: checked {cells_checked} cells instead of {original_cells} "
+                    f"({cells_checked / original_cells * 100:.1f}% of total)")
         
         if not header_rows:
             logger.warning("No header rows found by target matching, falling back to original detection")
@@ -500,11 +523,43 @@ class ExcelFormatter:
         
         return headers
 
+    def find_actual_data_end_row(self, data_start_row: int, data_end_row: int, input_headers: Dict[str, int]) -> int:
+        """Find the actual last row with data to avoid processing thousands of empty rows"""
+        logger.debug(f"Finding actual data end between rows {data_start_row}-{data_end_row}")
+        
+        # Scan backwards from data_end_row to find last row with any data
+        for row_idx in range(data_end_row, data_start_row - 1, -1):
+            has_data = False
+            
+            # Check all input columns for data in this row
+            for col_idx in input_headers.values():
+                cell = self.input_ws.cell(row=row_idx, column=col_idx)
+                if cell.value is not None and str(cell.value).strip() != "":
+                    has_data = True
+                    break
+            
+            if has_data:
+                logger.debug(f"Last row with data found at row {row_idx} (saved {data_end_row - row_idx} empty rows from processing)")
+                return row_idx
+        
+        # If no data found, return start row - 1 to process nothing
+        logger.debug(f"No data found in range {data_start_row}-{data_end_row}")
+        return data_start_row - 1
+
     def process_section_column_mapping(self, target_col_idx: int, target_header: str, 
                                  input_column: str, input_headers: Dict[str, int],
                                  data_start_row: int, data_end_row: int):
         """Process column mapping for a specific section with necessary column validation"""
         logger.debug(f"Processing section column '{target_header}' mapped from '{input_column}'")
+        
+        # OPTIMIZATION: Find actual data end to avoid processing empty rows
+        actual_data_end_row = self.find_actual_data_end_row(data_start_row, data_end_row, input_headers)
+        if actual_data_end_row < data_start_row:
+            logger.debug(f"No data found for section, skipping column '{target_header}'")
+            return
+        
+        if actual_data_end_row < data_end_row:
+            logger.debug(f"Optimized processing: reduced from {data_end_row - data_start_row + 1} to {actual_data_end_row - data_start_row + 1} rows for column '{target_header}'")
         
         input_col_idx = input_headers[input_column]
         target_data_start_row = self.target_header_row + 1
@@ -522,7 +577,8 @@ class ExcelFormatter:
         skipped_rows = 0
         processed_rows = 0
         
-        for input_row_idx in range(data_start_row, data_end_row + 1):
+        # OPTIMIZATION: Only process up to actual_data_end_row instead of data_end_row
+        for input_row_idx in range(data_start_row, actual_data_end_row + 1):
             # Check if this row has all necessary data
             if not self.check_row_has_necessary_data(input_row_idx, input_headers, applicable_mappings, necessary_columns):
                 skipped_rows += 1
@@ -601,13 +657,70 @@ class ExcelFormatter:
         logger.debug(f"Table end row detected: {table_end_row} (tolerance: {self.table_end_tolerance})")
         return table_end_row
 
+    def get_relevant_column_range(self) -> Tuple[int, int]:
+        """Get the range of columns that actually have headers/data to avoid checking empty columns"""
+        # Find the rightmost column with a header
+        max_col_with_header = 1
+        for col_idx in range(1, self.target_ws.max_column + 1):
+            header_cell = self.target_ws.cell(row=self.target_header_row, column=col_idx)
+            if header_cell.value is not None and str(header_cell.value).strip() != "":
+                max_col_with_header = col_idx
+        
+        logger.debug(f"Relevant column range: 1 to {max_col_with_header} (instead of 1 to {self.target_ws.max_column})")
+        return 1, max_col_with_header
+
+    def batch_delete_consecutive_rows(self, rows_to_delete: List[int]) -> int:
+        """Delete rows in batches of consecutive ranges for better performance"""
+        if not rows_to_delete:
+            return 0
+        
+        logger.debug(f"Batch deleting {len(rows_to_delete)} rows")
+        
+        # Group consecutive rows into ranges
+        ranges_to_delete = []
+        current_range_start = None
+        current_range_end = None
+        
+        # Sort in reverse order to maintain indices during deletion
+        sorted_rows = sorted(rows_to_delete, reverse=True)
+        
+        for row_idx in sorted_rows:
+            if current_range_start is None:
+                # Start new range
+                current_range_start = row_idx
+                current_range_end = row_idx
+            elif row_idx == current_range_end - 1:
+                # Extend current range (remember we're going backwards)
+                current_range_end = row_idx
+            else:
+                # Gap found, save current range and start new one
+                ranges_to_delete.append((current_range_end, current_range_start - current_range_end + 1))
+                current_range_start = row_idx
+                current_range_end = row_idx
+        
+        # Don't forget the last range
+        if current_range_start is not None:
+            ranges_to_delete.append((current_range_end, current_range_start - current_range_end + 1))
+        
+        # Delete ranges (already in reverse order)
+        total_deleted = 0
+        for start_row, count in ranges_to_delete:
+            logger.debug(f"Deleting {count} consecutive rows starting from row {start_row}")
+            self.target_ws.delete_rows(start_row, count)
+            total_deleted += count
+        
+        return total_deleted
+
     def clean_formula_only_rows_func(self):
-        """Remove rows that only contain formulas and completely empty rows"""
+        """Remove rows that only contain formulas and completely empty rows - OPTIMIZED"""
         if not self.clean_formula_only_rows:
             logger.debug("Formula-only row cleaning is disabled")
             return
         
-        logger.debug("Starting formula-only and empty row cleanup...")
+        logger.debug("Starting optimized formula-only and empty row cleanup...")
+        
+        # OPTIMIZATION 1: Only check relevant columns (those with headers)
+        min_col, max_col = self.get_relevant_column_range()
         
         rows_to_delete = []
         
@@ -619,8 +732,8 @@ class ExcelFormatter:
                 
             has_non_formula_data = False
             
-            # Check all cells in this row
-            for col_idx in range(1, self.target_ws.max_column + 1):
+            # OPTIMIZATION 2: Only check relevant columns instead of all max_column
+            for col_idx in range(min_col, max_col + 1):
                 cell = self.target_ws.cell(row=row_idx, column=col_idx)
                 
                 if cell.value is not None:
@@ -629,17 +742,14 @@ class ExcelFormatter:
                         # Check if it's not just whitespace
                         if str(cell.value).strip() != "":
                             has_non_formula_data = True
-                            break
+                            break  # Early exit - found data, keep this row
             
             # If row has no non-formula data (either empty or only formulas), mark for deletion
             if not has_non_formula_data:
                 rows_to_delete.append(row_idx)
         
-        # Delete rows in reverse order to maintain row indices
-        deleted_count = 0
-        for row_idx in reversed(rows_to_delete):
-            self.target_ws.delete_rows(row_idx, 1)
-            deleted_count += 1
+        # OPTIMIZATION 3: Batch delete consecutive rows
+        deleted_count = self.batch_delete_consecutive_rows(rows_to_delete)
         
         logger.debug(f"Cleaned up {deleted_count} empty/formula-only rows")
 
