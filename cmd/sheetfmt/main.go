@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sheetFmt/internal/config"
 	"sheetFmt/internal/excel"
@@ -10,6 +12,12 @@ import (
 	"sheetFmt/internal/mapping"
 	"strings"
 )
+
+// CSVConfig represents the CSV export configuration
+type CSVConfig struct {
+	InputDir  string `json:"input_dir"`
+	OutputDir string `json:"output_dir"`
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -42,6 +50,8 @@ func main() {
 		runAppendTargetHeaders(cfg)
 	case "format-all":
 		runFormatAll(cfg)
+	case "export-csv":
+		runCSVExport(cfg)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -155,6 +165,7 @@ func printUsage() {
 	fmt.Println("  sheetfmt map                          - Open interactive mapping tool")
 	fmt.Println("  sheetfmt format <input_file>          - Format single Excel file")
 	fmt.Println("  sheetfmt format-all                   - Format all Excel files in input directory")
+	fmt.Println("  sheetfmt export-csv                   - Export formatted Excel files to CSV")
 	fmt.Println("  sheetfmt append-target-headers        - Add target format headers to target_columns file")
 }
 
@@ -247,4 +258,64 @@ func runAppendTargetHeaders(cfg *config.Config) {
 		fmt.Printf("Error appending target headers: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runCSVExport(cfg *config.Config) {
+	logger.Info("Starting CSV export operation")
+	fmt.Println("\nExporting formatted Excel files to CSV...")
+
+	// Load CSV configuration
+	csvConfigPath := "configs/csv_config.json"
+	csvConfigData, err := os.ReadFile(csvConfigPath)
+	if err != nil {
+		logger.Error("Failed to read CSV config", "config_file", csvConfigPath, "error", err)
+		fmt.Printf("Error: Failed to read CSV config file: %s\n", csvConfigPath)
+		os.Exit(1)
+	}
+
+	var csvConfig CSVConfig
+	if err := json.Unmarshal(csvConfigData, &csvConfig); err != nil {
+		logger.Error("Failed to parse CSV config", "config_file", csvConfigPath, "error", err)
+		fmt.Printf("Error: Failed to parse CSV config file: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Check if input directory exists (from CSV config)
+	inputDir := csvConfig.InputDir
+	if _, err := os.Stat(inputDir); os.IsNotExist(err) {
+		fmt.Printf("Input directory not found: %s\n", inputDir)
+		fmt.Println("Please check your CSV config and ensure formatted Excel files exist in the specified directory.")
+		return
+	}
+
+	logger.Info("Using CSV config", "input_dir", inputDir, "output_dir", csvConfig.OutputDir)
+
+	// Get the path to the CSV export Python script
+	scriptPath := "internal/csv/csv_exporter.py"
+
+	// Check if CSV export script exists
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		logger.Error("CSV export script not found", "script", scriptPath)
+		fmt.Printf("Error: CSV export script not found: %s\n", scriptPath)
+		os.Exit(1)
+	}
+
+	// Run Python CSV export script with correct input directory
+	cmd := exec.Command("python", scriptPath, inputDir)
+
+	// Set environment to use UTF-8 encoding for Python
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
+
+	// Capture output
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		logger.Error("CSV export failed", "error", err, "output", string(output))
+		fmt.Printf("Error: CSV export failed: %v\n", err)
+		fmt.Printf("Output: %s\n", string(output))
+		os.Exit(1)
+	}
+
+	logger.Info("CSV export completed successfully")
+	fmt.Printf("%s", string(output))
 }

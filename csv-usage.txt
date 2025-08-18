@@ -1,0 +1,145 @@
+CSV Export Feature - Configuration & Usage Guide
+
+  Basic Usage
+
+  1. Standard Workflow
+
+  # Step 1-3: Existing Excel processing
+  sheetfmt scan                    # Discover columns
+  sheetfmt map                     # Create mappings
+  sheetfmt format-all             # Generate Excel files
+
+  # Step 4: NEW - Export to CSV
+  sheetfmt export-csv             # Convert to CSV files
+
+  2. Output Files
+
+  - data/csv_output/SalesPlans.csv - One row per Excel file (sales plan metadata)
+  - data/csv_output/LineItems.csv - One row per product line item
+  - data/logs/unmapped_values.log - Unmapped picklist values for review
+
+  Configuration Files
+
+  1. ID Management (configs/csv_config.json)
+
+  {
+    "salesplan_id": {
+      "prefix": "Plan-",           // Change prefix format
+      "start_number": 10000        // Avoid Salesforce ID conflicts
+    },
+    "lineitem_id": {
+      "prefix": "Item-",
+      "start_number": 1
+    }
+  }
+
+  2. Column Definitions (configs/csv_columns.json)
+
+  {
+    "salesplans": [
+      {"name": "SalesPlanID", "type": "auto_id"},
+      {"name": "ActivityType", "type": "picklist"},    // Will use picklist mapping
+      {"name": "TotalValue", "type": "number"}
+    ],
+    "lineitems": [
+      {"name": "ProductCategory", "type": "picklist"}, // Will use picklist mapping
+      {"name": "ProductName", "type": "text", "source": "Ürün Adı"}  // Maps to Excel column
+    ]
+  }
+
+  3. Picklist Mappings (configs/picklist_values.json)
+
+  {
+    "ActivityType": {
+      "allowed_values": ["In-Store", "Catalog", "Online", "Other"],
+      "mappings": {
+        "Mağaza İçi": "In-Store",      // Maps Turkish to English
+        "Katalog": "Catalog"
+      },
+      "default": "Other"               // Fallback for unknown values
+    }
+  }
+
+  Common Configuration Tasks
+
+  Adding New Picklist Values
+
+  1. Edit configs/picklist_values.json
+  2. Add to mappings section:
+  "mappings": {
+    "New Turkish Term": "Standard English Value"
+  }
+  3. Ensure target value is in allowed_values
+
+  Adding New CSV Columns
+
+  1. Edit configs/csv_columns.json
+  2. Add column definition:
+  {"name": "NewColumn", "type": "text", "source": "Excel Column Name"}
+  3. For picklists, set "type": "picklist" and configure in picklist_values.json
+
+  Changing ID Format
+
+  1. Edit configs/csv_config.json
+  2. Modify prefix and starting number:
+  "salesplan_id": {
+    "prefix": "SP-",
+    "start_number": 50000
+  }
+
+  Handling Unmapped Values
+
+  1. Run export and check: data/logs/unmapped_values.log
+  2. Format: ColumnName|OriginalValue|DefaultUsed
+  3. Add mappings to picklist_values.json:
+  "mappings": {
+    "OriginalValue": "CorrectSalesforceValue"
+  }
+
+  Data Flow & Mapping
+
+  SalesPlans Data Sources
+
+  - SourceFile: Excel filename
+  - ActivityType: Derived from filename keywords + picklist mapping
+  - Dates: Extracted from filename patterns (e.g., "1-14 Mayıs")
+  - Totals: Calculated from Excel content
+
+  LineItems Data Sources
+
+  - Direct Mapping: Uses existing column_mapping.json from Excel workflow
+  - ProductCategory: Derived from filename keywords + picklist mapping
+  - Picklist Columns: Applied only to columns marked as "type": "picklist"
+
+  Troubleshooting
+
+  No Data in CSV
+
+  - Check data/output/results/ has Excel files
+  - Verify Python venv is activated
+  - Check logs in logs/csv_export.log
+
+  Wrong Picklist Values
+
+  - Check data/logs/unmapped_values.log
+  - Add missing mappings to picklist_values.json
+  - Re-run export
+
+  ID Conflicts
+
+  - Adjust start_number in csv_config.json
+  - Delete data/csv_state/*.txt to reset counters
+
+  Advanced Features
+
+  Deduplication
+
+  - SalesPlans: By SourceFile + ActivityType
+  - LineItems: By SalesPlanID + ProductBarcode
+  - Safe to re-run - only new data gets added
+
+  Filename Intelligence
+
+  - Activity Type Detection: "Mağaza İçi" → "In-Store"
+  - Date Extraction: "1-14 Mayıs" → Start/End dates
+  - Category Detection: "Hair Care" keywords → Product category

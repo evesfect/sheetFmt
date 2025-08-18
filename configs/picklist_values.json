@@ -1,0 +1,49 @@
+{
+  "ActivityType": {
+    "allowed_values": ["Insert", "In-Store"],
+    "mappings": {
+      "Mağaza İçi": "In-Store",
+      "Mağazaiçi": "In-Store",
+      "M.İçi": "In-Store",
+      "Katalog": "Insert",
+      "Insert": "Insert",
+      "Aktivite": "In-Store",
+      "Kasa": "In-Store",
+      "Metropol": "In-Store"
+    },
+    "filename_keywords": {
+      "In-Store": ["mağaza içi", "mağazaiçi", "m.içi", "kasa", "aktivite", "metropol"],
+      "Insert": ["katalog", "insert"]
+    },
+    "default": "Insert"
+  },
+  "Customer": {
+    "allowed_values": ["Carrefour"],
+    "mappings": {
+      "CarrefourSA": "Carrefour",
+      "Carrefour": "Carrefour"
+    },
+    "default": "Carrefour"
+  },
+  "ProductCategory": {
+    "allowed_values": ["Feminine Care", "Hair Care", "Oral Care", "Shave Care", "Old Spice", "Other"],
+    "mappings": {
+      "Fem Care": "Feminine Care",
+      "Feminine Care": "Feminine Care",
+      "Hair Care": "Hair Care",
+      "Oral Care": "Oral Care",
+      "Shave Care": "Shave Care",
+      "Old Spice": "Old Spice",
+      "Kadın Bakım": "Feminine Care",
+      "Saç Bakım": "Hair Care"
+    },
+    "filename_keywords": {
+      "Feminine Care": ["fem care", "feminine", "kadın bakım", "orkid", "tampax", "ultra"],
+      "Hair Care": ["hair care", "saç bakım", "h&s", "head", "pantene", "herbal"],
+      "Oral Care": ["oral care", "ağız bakım", "diş"],
+      "Shave Care": ["shave", "tıraş", "venus", "dispo"],
+      "Old Spice": ["old spice", "oldspice"]
+    },
+    "default": "Other"
+  }
+}

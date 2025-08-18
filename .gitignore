@@ -38,3 +38,4 @@ myenv/
 logs/
 CLAUDE.md
 backup/
+.claude/

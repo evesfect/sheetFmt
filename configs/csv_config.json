@@ -1,0 +1,21 @@
+{
+  "salesplan_id": {
+    "prefix": "Plan-",
+    "start_number": 10000,
+    "state_file": "data/csv_state/last_salesplan_id.txt"
+  },
+  "lineitem_id": {
+    "prefix": "Item-",
+    "start_number": 1,
+    "state_file": "data/csv_state/last_lineitem_id.txt"
+  },
+  "output_dir": "data/csv_output",
+  "input_dir": "data/results",
+  "excel_column_mappings": {
+    "start_date_column": "Başlangıç",
+    "end_date_column": "Bitiş"
+  },
+  "logs": {
+    "unmapped_values": "data/logs/unmapped_values.log"
+  }
+}

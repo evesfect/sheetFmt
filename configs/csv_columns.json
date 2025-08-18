@@ -1,0 +1,26 @@
+{
+  "salesplans": [
+    {"name": "SalesPlanID", "type": "auto_id"},
+    {"name": "SourceFile", "type": "text"},
+    {"name": "Customer", "type": "picklist"},
+    {"name": "StartDate", "type": "date"},
+    {"name": "EndDate", "type": "date"},
+    {"name": "ActivityType", "type": "picklist"},
+    {"name": "ListPriceMonth", "type": "number"},
+    {"name": "ListPriceYear", "type": "number"}
+  ],
+  "lineitems": [
+    {"name": "LineItemID", "type": "auto_id"},
+    {"name": "SalesPlanID", "type": "foreign_key"},
+    {"name": "ProductBarcode", "type": "text", "source": "Ürün Barkodu"},
+    {"name": "ProductName", "type": "text", "source": "Ürün Adı"},
+    {"name": "ProductCategory", "type": "picklist"},
+    {"name": "ActivityDays", "type": "number", "source": "Aktivite Gün"},
+    {"name": "ListPrice", "type": "number", "source": "Liste Fiyatı"},
+    {"name": "RecommendedPrice", "type": "number", "source": "Tavsiye Raf Fiyatı*"},
+    {"name": "RecommendedRevenue", "type": "number", "source": "Tavsiye Ciro"},
+    {"name": "ActivitySupport", "type": "number", "source": "Aktivite Adet Başı Destek"},
+    {"name": "CustomerContract", "type": "number", "source": "Müşteri Kontrat %"},
+    {"name": "ActivityMargin", "type": "number", "source": "Tavsiye Aktivite Marjı"}
+  ]
+}
