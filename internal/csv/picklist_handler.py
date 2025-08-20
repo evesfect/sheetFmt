@@ -5,6 +5,7 @@ Handles picklist value mapping and validation for CSV export.
 """
 
 import logging
+import unicodedata
 from typing import Dict, Any, Optional
 from csv_config import CSVConfig
 
@@ -16,6 +17,46 @@ class PicklistHandler:
     def __init__(self, config: CSVConfig):
         self.config = config
         self.unmapped_count = 0
+    
+    def _normalize_turkish_text(self, text: str) -> str:
+        """
+        Normalize Turkish text for case-insensitive comparison
+        
+        Args:
+            text: Text to normalize
+            
+        Returns:
+            Normalized text with proper Turkish character handling
+        """
+        if not text:
+            return ""
+        
+        # First normalize Unicode combining characters
+        text = unicodedata.normalize('NFC', text)
+        
+        # Handle Turkish specific character mappings for case-insensitive comparison
+        # Turkish has specific rules: İ/i and I/ı are different pairs
+        turkish_mappings = {
+            'İ': 'i',  # Turkish capital I with dot -> lowercase i
+            'I': 'ı',  # ASCII capital I -> Turkish lowercase ı (dotless i)
+            'Ğ': 'ğ',  # Turkish G with breve
+            'Ü': 'ü',  # Turkish U with diaeresis
+            'Ş': 'ş',  # Turkish S with cedilla
+            'Ç': 'ç',  # Turkish C with cedilla
+            'Ö': 'ö',  # Turkish O with diaeresis
+        }
+        
+        # Apply Turkish-specific character mappings first
+        for upper, lower in turkish_mappings.items():
+            text = text.replace(upper, lower)
+        
+        # Then apply regular lowercase transformation
+        text = text.lower()
+        
+        # Remove any remaining combining characters that might cause issues
+        text = ''.join(c for c in text if not unicodedata.combining(c))
+        
+        return text
     
     def apply_picklist_mapping(self, value: Any, column_name: str, table_type: str) -> str:
         """
@@ -150,7 +191,8 @@ class PicklistHandler:
         Returns:
             Mapped picklist value
         """
-        filename_lower = filename.lower()
+        filename_normalized = self._normalize_turkish_text(filename)
+        logger.debug(f"Processing filename for {column_name}: '{filename}' -> '{filename_normalized}'")
         
         # Get picklist configuration for this column
         picklist_config = self.config.get_picklist_config(column_name)
@@ -164,13 +206,20 @@ class PicklistHandler:
             logger.debug(f"No filename keywords configured for column '{column_name}', using direct mapping")
             return self.apply_picklist_mapping(filename, column_name, table_type)
         
+        logger.debug(f"Available filename keywords for {column_name}: {filename_keywords}")
+        
         # Check for keyword matches
         for picklist_value, keywords in filename_keywords.items():
+            logger.debug(f"Checking picklist value '{picklist_value}' with keywords: {keywords}")
             for keyword in keywords:
-                if keyword.lower() in filename_lower:
-                    logger.debug(f"Detected {column_name} '{picklist_value}' from filename keyword '{keyword}'")
+                keyword_normalized = self._normalize_turkish_text(keyword)
+                logger.debug(f"  Testing keyword '{keyword}' -> '{keyword_normalized}' in '{filename_normalized}'")
+                if keyword_normalized in filename_normalized:
+                    logger.info(f"MATCH! Detected {column_name} '{picklist_value}' from filename keyword '{keyword}' in file '{filename}'")
                     return picklist_value
+                else:
+                    logger.debug(f"  No match for keyword '{keyword_normalized}'")
         
         # No keyword match found, fallback to mapping or default
-        logger.debug(f"No filename keywords matched for {column_name}, using fallback mapping")
+        logger.info(f"No filename keywords matched for {column_name} in '{filename}', using fallback mapping")
         return self.apply_picklist_mapping(filename, column_name, table_type)

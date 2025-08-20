@@ -13,7 +13,7 @@
     },
     "filename_keywords": {
       "In-Store": ["mağaza içi", "mağazaiçi", "m.içi", "kasa", "aktivite", "metropol"],
-      "Insert": ["katalog", "insert"]
+      "Insert": ["katalog", "insert", "ınsert", "Insert"]
     },
     "default": "Insert"
   },
@@ -34,6 +34,7 @@
       "Oral Care": "Oral Care",
       "Shave Care": "Shave Care",
       "Old Spice": "Old Spice",
+      "Other": "Other",
       "Kadın Bakım": "Feminine Care",
       "Saç Bakım": "Hair Care"
     },
